@@ -16,6 +16,9 @@
 static int cursor_col = 0;
 static int cursor_row = 0;
 
+/* 前向声明 */
+void update_cursor(void);
+
 void print_char(char c, int col, int row, char attr) {
     char *video = (char *)VIDEO_MEMORY;
     int offset;
@@ -34,6 +37,7 @@ void print_char(char c, int col, int row, char attr) {
             video[offset] = ' ';
             video[offset + 1] = attr;
         }
+        update_cursor();
         return;
     }
 
@@ -41,6 +45,7 @@ void print_char(char c, int col, int row, char attr) {
     if (c == '\n') {
         cursor_row++;
         cursor_col = 0;
+        update_cursor();
         return;
     }
 
@@ -52,6 +57,8 @@ void print_char(char c, int col, int row, char attr) {
         cursor_col = 0;
         cursor_row++;
     }
+
+    update_cursor();
 }
 
 void print_string(const char *str, char attr) {
@@ -70,6 +77,20 @@ void clear_screen(void) {
     }
     cursor_col = 0;
     cursor_row = 0;
+    update_cursor();
+}
+
+/* 更新硬件光标位置 */
+void update_cursor(void) {
+    uint16_t pos = cursor_row * MAX_COLS + cursor_col;
+
+    /* 设置光标低字节 */
+    outb(0x3D4, 0x0F);
+    outb(0x3D5, (uint8_t)(pos & 0xFF));
+
+    /* 设置光标高字节 */
+    outb(0x3D4, 0x0E);
+    outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
 /* 扫描码转 ASCII（简化版） */
