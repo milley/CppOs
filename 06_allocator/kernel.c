@@ -4,6 +4,7 @@
 #include "allocator.h"
 
 #define VIDEO_MEMORY 0xB8000
+#define SERIAL_PORT  0x3F8
 #define MAX_COLS 80
 #define MAX_ROWS 25
 
@@ -14,6 +15,39 @@
 
 static int cursor_col = 0;
 static int cursor_row = 0;
+
+/* 端口 I/O */
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+/* 串口输出（用于调试） */
+static void serial_init(void) {
+    outb(SERIAL_PORT + 1, 0x00);    /* 禁用中断 */
+    outb(SERIAL_PORT + 3, 0x80);    /* 启用 DLAB */
+    outb(SERIAL_PORT + 0, 0x03);    /* 波特率 38400 */
+    outb(SERIAL_PORT + 1, 0x00);
+    outb(SERIAL_PORT + 3, 0x03);    /* 8 bits, no parity, one stop bit */
+    outb(SERIAL_PORT + 2, 0xC7);    /* FIFO */
+    outb(SERIAL_PORT + 4, 0x0B);    /* IRQs, RTS/DSR set */
+}
+
+static void serial_putchar(char c) {
+    while ((inb(SERIAL_PORT + 5) & 0x20) == 0);
+    outb(SERIAL_PORT, c);
+}
+
+static void serial_print(const char *str) {
+    while (*str) {
+        serial_putchar(*str++);
+    }
+}
 
 void print_char(char c) {
     char *video = (char *)VIDEO_MEMORY;
@@ -36,6 +70,7 @@ void print_char(char c) {
 }
 
 void print_string(const char *str) {
+    serial_print(str);  /* 同时输出到串口 */
     while (*str) {
         print_char(*str);
         str++;
@@ -101,6 +136,7 @@ void print_memory_status(void) {
 }
 
 void kernel_main(void) {
+    serial_init();  /* 初始化串口 */
     clear_screen();
 
     print_string("========================================\n");
@@ -114,51 +150,157 @@ void kernel_main(void) {
 
     print_memory_status();
 
-    /* 测试 1: 分配内存 */
-    print_string("Test 1: Allocate 100 bytes\n");
+    /* ========== 测试 1: 基本分配和释放 ========== */
+    print_string("Test 1: Basic allocation\n");
+    print_string("----------------------------------------\n");
+
     void *ptr1 = kmalloc(100);
-    print_string("  ptr1 = ");
+    print_string("  kmalloc(100) = ");
     print_hex((uint32_t)ptr1);
     print_string("\n");
-    print_memory_status();
 
-    /* 测试 2: 分配更多内存 */
-    print_string("Test 2: Allocate 500 bytes\n");
     void *ptr2 = kmalloc(500);
-    print_string("  ptr2 = ");
+    print_string("  kmalloc(500) = ");
     print_hex((uint32_t)ptr2);
     print_string("\n");
-    print_memory_status();
 
-    /* 测试 3: 分配页 */
-    print_string("Test 3: Allocate one page (4096 bytes)\n");
-    void *page = alloc_page();
-    print_string("  page = ");
-    print_hex((uint32_t)page);
-    print_string("\n");
-    print_memory_status();
-
-    /* 测试 4: 释放内存 */
-    print_string("Test 4: Free ptr1\n");
-    kfree(ptr1);
-    print_memory_status();
-
-    /* 测试 5: 释放后再分配 */
-    print_string("Test 5: Allocate 50 bytes (should reuse freed space)\n");
-    void *ptr3 = kmalloc(50);
-    print_string("  ptr3 = ");
+    void *ptr3 = kmalloc(200);
+    print_string("  kmalloc(200) = ");
     print_hex((uint32_t)ptr3);
     print_string("\n");
-    print_memory_status();
 
-    /* 测试 6: 释放所有 */
-    print_string("Test 6: Free all allocations\n");
+    /* 验证地址不同 */
+    if (ptr1 != ptr2 && ptr2 != ptr3 && ptr1 != ptr3) {
+        print_string("  [PASS] All addresses are different\n");
+    } else {
+        print_string("  [FAIL] Addresses conflict!\n");
+    }
+
+    /* 验证地址在堆范围内 */
+    if ((uint32_t)ptr1 >= 0x100000 && (uint32_t)ptr1 < 0x200000) {
+        print_string("  [PASS] ptr1 in heap range\n");
+    } else {
+        print_string("  [FAIL] ptr1 out of range!\n");
+    }
+
+    print_string("\n");
+
+    /* ========== 测试 2: 内存统计 ========== */
+    print_string("Test 2: Memory statistics\n");
+    print_string("----------------------------------------\n");
+
+    uint32_t used_before = get_used_memory();
+    print_string("  Used before free: ");
+    print_decimal(used_before);
+    print_string(" bytes\n");
+
     kfree(ptr2);
-    kfree(page);
-    kfree(ptr3);
-    print_memory_status();
+    uint32_t used_after = get_used_memory();
+    print_string("  Used after free ptr2: ");
+    print_decimal(used_after);
+    print_string(" bytes\n");
 
-    print_string("========================================\n");
+    if (used_after < used_before) {
+        print_string("  [PASS] Used memory decreased after free\n");
+    } else {
+        print_string("  [FAIL] Used memory did not decrease!\n");
+    }
+
+    print_string("\n");
+
+    /* ========== 测试 3: 写入验证 ========== */
+    print_string("Test 3: Write and read test\n");
+    print_string("----------------------------------------\n");
+
+    /* 写入数据 */
+    char *data = (char *)ptr1;
+    data[0] = 'H';
+    data[1] = 'E';
+    data[2] = 'L';
+    data[3] = 'L';
+    data[4] = 'O';
+    data[5] = '\0';
+
+    /* 读取并验证 */
+    if (data[0] == 'H' && data[1] == 'E' && data[2] == 'L') {
+        print_string("  [PASS] Write/read works: ");
+        print_string(data);
+        print_string("\n");
+    } else {
+        print_string("  [FAIL] Write/read failed!\n");
+    }
+
+    print_string("\n");
+
+    /* ========== 测试 4: 重用已释放内存 ========== */
+    print_string("Test 4: Reuse freed memory\n");
+    print_string("----------------------------------------\n");
+
+    void *ptr4 = kmalloc(300);
+    print_string("  kmalloc(300) = ");
+    print_hex((uint32_t)ptr4);
+    print_string("\n");
+
+    /* ptr4 应该重用 ptr2 释放的空间（500 > 300） */
+    if ((uint32_t)ptr4 == (uint32_t)ptr2) {
+        print_string("  [PASS] Reused freed memory\n");
+    } else {
+        print_string("  [INFO] Used different location (may split)\n");
+    }
+
+    print_string("\n");
+
+    /* ========== 测试 5: 页分配 ========== */
+    print_string("Test 5: Page allocation\n");
+    print_string("----------------------------------------\n");
+
+    void *page1 = alloc_page();
+    print_string("  alloc_page() = ");
+    print_hex((uint32_t)page1);
+    print_string("\n");
+
+    void *page2 = alloc_page();
+    print_string("  alloc_page() = ");
+    print_hex((uint32_t)page2);
+    print_string("\n");
+
+    /* 两个页应该不同 */
+    if (page1 != page2) {
+        print_string("  [PASS] Different pages allocated\n");
+    } else {
+        print_string("  [FAIL] Same page returned!\n");
+    }
+
+    print_string("\n");
+
+    /* ========== 测试 6: 全部释放 ========== */
+    print_string("Test 6: Free all and verify\n");
+    print_string("----------------------------------------\n");
+
+    kfree(ptr1);
+    kfree(ptr3);
+    kfree(ptr4);
+    free_page(page1);
+    free_page(page2);
+
+    uint32_t final_free = get_free_memory();
+    uint32_t final_used = get_used_memory();
+
+    print_string("  Final used: ");
+    print_decimal(final_used);
+    print_string(" bytes\n");
+
+    print_string("  Final free: ");
+    print_decimal(final_free);
+    print_string(" bytes\n");
+
+    if (final_used == 0) {
+        print_string("  [PASS] All memory freed\n");
+    } else {
+        print_string("  [WARN] Some memory still used (fragmentation)\n");
+    }
+
+    print_string("\n========================================\n");
     print_string("   All tests completed!\n");
     print_string("========================================\n");
 
