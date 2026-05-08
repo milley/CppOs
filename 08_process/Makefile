@@ -40,7 +40,7 @@ $(OS_BIN): $(BOOTLOADER) $(KERNEL_BIN)
 	truncate -s 15360 os.bin
 
 run: $(OS_BIN)
-	qemu-system-x86_64 -fda os.bin
+	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy
 
 clean:
 	rm -f *.o *.bin *.elf
