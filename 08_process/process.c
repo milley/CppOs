@@ -130,23 +130,22 @@ process_t* process_create(const char *name, void (*entry_point)(void), process_p
 
     /* 栈布局（从高到低）：
      * [entry_point]  <- ret 会跳转到这里
-     * [eax=0]
-     * [ebx=0]
-     * [ecx=0]
-     * [edx=0]
-     * [esi=0]
-     * [edi=0]
-     * [ebp=0]
+     * [gs=0x10] [fs=0x10] [es=0x10] [ds=0x10]  <- 段寄存器（内核数据段）
+     * [eax=0] [ebx=0] [ecx=0] [edx=0] [esi=0] [edi=0] [ebp=0]
      */
 
     stack_ptr--; *stack_ptr = (uint32_t)entry_point;  /* 返回地址 = 入口点 */
-    stack_ptr--; *stack_ptr = 0;          /* eax */
-    stack_ptr--; *stack_ptr = 0;          /* ebx */
-    stack_ptr--; *stack_ptr = 0;          /* ecx */
-    stack_ptr--; *stack_ptr = 0;          /* edx */
-    stack_ptr--; *stack_ptr = 0;          /* esi */
-    stack_ptr--; *stack_ptr = 0;          /* edi */
-    stack_ptr--; *stack_ptr = 0;          /* ebp */
+    stack_ptr--; *stack_ptr = 0x10;        /* gs - 内核数据段 */
+    stack_ptr--; *stack_ptr = 0x10;        /* fs */
+    stack_ptr--; *stack_ptr = 0x10;        /* es */
+    stack_ptr--; *stack_ptr = 0x10;        /* ds */
+    stack_ptr--; *stack_ptr = 0;           /* eax */
+    stack_ptr--; *stack_ptr = 0;           /* ebx */
+    stack_ptr--; *stack_ptr = 0;           /* ecx */
+    stack_ptr--; *stack_ptr = 0;           /* edx */
+    stack_ptr--; *stack_ptr = 0;           /* esi */
+    stack_ptr--; *stack_ptr = 0;           /* edi */
+    stack_ptr--; *stack_ptr = 0;           /* ebp */
 
     proc->esp = (uint32_t)stack_ptr;
     proc->eip = (uint32_t)entry_point;

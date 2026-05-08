@@ -109,6 +109,7 @@ void print_decimal(uint32_t value) {
 
     if (value == 0) {
         print_char('0');
+        serial_putchar('0');  /* 同时输出到串口 */
         return;
     }
 
@@ -118,7 +119,9 @@ void print_decimal(uint32_t value) {
     }
 
     while (i > 0) {
-        print_char(buffer[--i]);
+        char c = buffer[--i];
+        print_char(c);
+        serial_putchar(c);  /* 同时输出到串口 */
     }
 }
 
@@ -161,28 +164,35 @@ void process_b(void) {
     }
 }
 
+/* 进程 C 的计数器（全局变量） */
+static int process_c_count = 0;
+
 /* 进程 C */
 void process_c(void) {
     char *video = (char *)VIDEO_MEMORY;
-    int count = 0;
 
     while (1) {
-        /* 在屏幕第三行显示 'C' 和计数 */
+        process_c_count++;
+
+        /* 在屏幕第三行显示 'C:' 和计数（显示 3 位数） */
+        int count = process_c_count;
         video[320] = 'C';
         video[321] = RED_ON_BLACK;
         video[322] = ':';
         video[323] = RED_ON_BLACK;
-        video[324] = '0' + (count % 10);
+        video[324] = '0' + ((count / 100) % 10);
         video[325] = RED_ON_BLACK;
-
-        count++;
+        video[326] = '0' + ((count / 10) % 10);
+        video[327] = RED_ON_BLACK;
+        video[328] = '0' + (count % 10);
+        video[329] = RED_ON_BLACK;
 
         delay(3);
 
         /* 主动让出 CPU */
-        print_string("[C] Yielding CPU (count=");
-        print_decimal(count);
-        print_string(")\n");
+        print_string("[C] count=");
+        print_decimal((uint32_t)process_c_count);
+        print_string("\n");
         process_schedule();
     }
 }
