@@ -246,6 +246,118 @@ void test_process_3(void) {
     }
 }
 
+/* 测试 fork 的进程 */
+void test_fork_process(void) {
+    uint32_t pid = sys_getpid();
+    char *video = (char *)0xB8000;
+    int count = 0;
+
+    /* 显示初始 PID */
+    int label_offset = 9 * 160;
+    video[label_offset] = 'F';
+    video[label_offset + 1] = 0x0E;
+    video[label_offset + 2] = 'O';
+    video[label_offset + 3] = 0x0E;
+    video[label_offset + 4] = 'R';
+    video[label_offset + 5] = 0x0E;
+    video[label_offset + 6] = 'K';
+    video[label_offset + 7] = 0x0E;
+    video[label_offset + 8] = ':';
+    video[label_offset + 9] = 0x0E;
+
+    /* 显示初始 PID */
+    video[label_offset + 10] = 'P';
+    video[label_offset + 11] = 0x0E;
+    video[label_offset + 12] = '0' + pid;
+    video[label_offset + 13] = 0x0E;
+
+    /* 等待一段时间让屏幕显示初始状态 */
+    for (volatile int i = 0; i < 500000; i++);
+
+    /* 尝试 fork */
+    int ret = sys_fork();
+
+    /* fork 后显示返回值 */
+    video[label_offset + 14] = ' ';
+    video[label_offset + 15] = 0x0E;
+    video[label_offset + 16] = 'R';
+    video[label_offset + 17] = 0x0E;
+    video[label_offset + 18] = '=';
+    video[label_offset + 19] = 0x0E;
+    if (ret < 0) {
+        video[label_offset + 20] = '-';
+        video[label_offset + 21] = 0x0C;
+        video[label_offset + 22] = '1';
+        video[label_offset + 23] = 0x0C;
+    } else {
+        video[label_offset + 20] = '0' + (ret / 10);
+        video[label_offset + 21] = 0x0A;
+        video[label_offset + 22] = '0' + (ret % 10);
+        video[label_offset + 23] = 0x0A;
+    }
+
+    if (ret == 0) {
+        /* 子进程 - 在第 10 行显示 */
+        while (1) {
+            int offset = 10 * 160;
+            video[offset] = 'C';
+            video[offset + 1] = 0x0D;  /* 洋红色 */
+            video[offset + 2] = 'H';
+            video[offset + 3] = 0x0D;
+            video[offset + 4] = 'I';
+            video[offset + 5] = 0x0D;
+            video[offset + 6] = 'L';
+            video[offset + 7] = 0x0D;
+            video[offset + 8] = 'D';
+            video[offset + 9] = 0x0D;
+            video[offset + 10] = ':';
+            video[offset + 11] = 0x0D;
+            video[offset + 12] = '0' + sys_getpid();
+            video[offset + 13] = 0x0D;
+            video[offset + 14] = ' ';
+            video[offset + 15] = 0x0D;
+            video[offset + 16] = 'C';
+            video[offset + 17] = 0x0D;
+            video[offset + 18] = '0' + (count % 10);
+            video[offset + 19] = 0x0D;
+
+            for (volatile int i = 0; i < 100000; i++);
+            count++;
+        }
+    } else if (ret > 0) {
+        /* 父进程 */
+        while (1) {
+            int offset = 9 * 160 + 25 * 2;
+            video[offset] = 'P';
+            video[offset + 1] = 0x0E;
+            video[offset + 2] = 'A';
+            video[offset + 3] = 0x0E;
+            video[offset + 4] = 'R';
+            video[offset + 5] = 0x0E;
+            video[offset + 6] = ':';
+            video[offset + 7] = 0x0E;
+            video[offset + 8] = '0' + (count % 10);
+            video[offset + 9] = 0x0E;
+
+            for (volatile int i = 0; i < 100000; i++);
+            count++;
+        }
+    } else {
+        /* fork 失败 */
+        while (1) {
+            int offset = 9 * 160 + 25 * 2;
+            video[offset] = 'E';
+            video[offset + 1] = 0x0C;
+            video[offset + 2] = 'R';
+            video[offset + 3] = 0x0C;
+            video[offset + 4] = 'R';
+            video[offset + 5] = 0x0C;
+
+            for (volatile int i = 0; i < 100000; i++);
+        }
+    }
+}
+
 void kernel_main(void) {
     clear_screen();
 
@@ -315,14 +427,14 @@ void kernel_main(void) {
     print_string("   Creating processes...\n");
     print_string("========================================\n\n");
 
-    /* 创建多个进程 */
+    /* 创建进程：使用 fork 测试进程 */
     struct process *proc1 = process_create(test_process_1, PRIORITY_NORMAL);
     struct process *proc2 = process_create(test_process_2, PRIORITY_NORMAL);
-    struct process *proc3 = process_create(test_process_3, PRIORITY_NORMAL);
+    struct process *proc3 = process_create(test_fork_process, PRIORITY_NORMAL);
 
     if (proc1) print_string("  Process 1 created (PID: 1)\n");
     if (proc2) print_string("  Process 2 created (PID: 2)\n");
-    if (proc3) print_string("  Process 3 created (PID: 3)\n\n");
+    if (proc3) print_string("  Fork test process created (PID: 3)\n\n");
 
     print_string("========================================\n");
     print_string("   Starting scheduler...\n");

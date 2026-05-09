@@ -1,46 +1,41 @@
 /* syscall.c - 系统调用实现 */
 
+#include <stddef.h>
 #include "syscall.h"
 #include "idt.h"
-
-/* 当前进程 ID（简化版） */
-static uint32_t current_pid = 1;
+#include "process.h"
+#include "allocator.h"
+#include "tss.h"
 
 /* 时钟计数（外部定义） */
 extern uint32_t timer_ticks;
 
 /* 系统调用：退出进程 */
 static uint32_t sys_exit_handler(int status) {
-    /* 简化版：显示退出信息并挂起 */
-    char *video = (char *)0xB8000;
-    const char *msg = "Process exited with code ";
-    int offset = 20 * 160;  /* 第 21 行 */
-
-    for (int i = 0; msg[i]; i++) {
-        video[offset + i * 2] = msg[i];
-        video[offset + i * 2 + 1] = 0x0C;
-    }
-
-    /* 显示退出码 */
-    char code[12];
-    int i = 0;
-    if (status == 0) {
-        code[i++] = '0';
-    } else {
-        int s = status;
-        while (s > 0) {
-            code[i++] = '0' + (s % 10);
-            s /= 10;
+    struct process *proc = process_get_current();
+    if (proc == NULL) {
+        /* 没有进程，直接挂起 */
+        while (1) {
+            __asm__ volatile("hlt");
         }
     }
-    int pos = 28;
-    while (i > 0) {
-        video[offset + pos * 2] = code[--i];
-        video[offset + pos * 2 + 1] = 0x0C;
-        pos++;
+
+    /* 设置退出状态 */
+    proc->state = PROCESS_ZOMBIE;
+    proc->ticks_remaining = 0;  /* 让调度器不再运行此进程 */
+
+    /* 保存退出码（简化版：存储在 priority 字段） */
+    proc->priority = status;
+
+    /* 如果父进程在等待，唤醒它 */
+    if (proc->parent != NULL && proc->parent->state == PROCESS_BLOCKED) {
+        process_unblock(proc->parent);
     }
 
-    /* 挂起 */
+    /* 触发调度（进程已为 ZOMBIE，调度器会选择其他进程） */
+    schedule();
+
+    /* 不应该到达这里 */
     while (1) {
         __asm__ volatile("hlt");
     }
@@ -198,7 +193,64 @@ static uint32_t sys_sleep_handler(uint32_t ticks) {
 
 /* 系统调用：获取进程 ID */
 static uint32_t sys_getpid_handler(void) {
-    return current_pid;
+    struct process *proc = process_get_current();
+    if (proc != NULL) {
+        return proc->pid;
+    }
+    return 0;
+}
+
+/* 系统调用：wait - 等待子进程 */
+static uint32_t sys_wait_handler(uint32_t *status) {
+    struct process *parent = process_get_current();
+    if (parent == NULL) {
+        return -1;
+    }
+
+    /* 检查是否有子进程 */
+    if (parent->first_child == NULL) {
+        return -1;  /* 无子进程 */
+    }
+
+    /* 查找僵尸子进程 */
+    struct process *child = parent->first_child;
+    while (child != NULL) {
+        if (child->state == PROCESS_ZOMBIE) {
+            /* 找到僵尸进程，回收 */
+            uint32_t child_pid = child->pid;
+
+            /* 保存退出状态 */
+            if (status != NULL) {
+                *status = child->priority;  /* 退出码存储在 priority */
+            }
+
+            /* 从子进程列表移除 */
+            if (parent->first_child == child) {
+                parent->first_child = child->next_sibling;
+            } else {
+                struct process *prev = parent->first_child;
+                while (prev != NULL && prev->next_sibling != child) {
+                    prev = prev->next_sibling;
+                }
+                if (prev != NULL) {
+                    prev->next_sibling = child->next_sibling;
+                }
+            }
+
+            /* 释放 PCB */
+            kfree(child);
+
+            return child_pid;
+        }
+        child = child->next_sibling;
+    }
+
+    /* 没有僵尸子进程，阻塞等待 */
+    process_block(parent);
+    schedule();
+
+    /* 被唤醒后再次检查（简化版：返回 -1 让用户重试） */
+    return -1;
 }
 
 /* 系统调用表 */
@@ -213,6 +265,8 @@ static syscall_func_t syscall_table[] = {
     [SYS_PUTS]     = (syscall_func_t)sys_puts_handler,
     [SYS_PUTC]     = (syscall_func_t)sys_putc_handler,
     [SYS_GETTICKS] = (syscall_func_t)sys_getticks_handler,
+    [SYS_WAIT]     = (syscall_func_t)sys_wait_handler,
+    /* SYS_FORK 和 SYS_EXEC 在 syscall_handler 中特殊处理 */
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table) / sizeof(syscall_table[0]))
@@ -227,11 +281,136 @@ void syscall_handler(struct interrupt_frame *frame) {
 
     uint32_t ret = -1;  /* 默认返回 -1 表示错误 */
 
-    if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
-        ret = syscall_table[syscall_num](arg1, arg2, arg3);
-    }
+    if (syscall_num == SYS_FORK) {
+            /* fork 需要当前上下文 */
+            struct process *parent = process_get_current();
 
-    /* 返回值放在 eax */
+            /* 调试输出 - 第 11 行 */
+            char *debug_video = (char *)0xB8000;
+            int dbg_offset = 11 * 160;
+            debug_video[dbg_offset] = 'F';
+            debug_video[dbg_offset + 1] = 0x0E;
+            debug_video[dbg_offset + 2] = 'O';
+            debug_video[dbg_offset + 3] = 0x0E;
+            debug_video[dbg_offset + 4] = 'R';
+            debug_video[dbg_offset + 5] = 0x0E;
+            debug_video[dbg_offset + 6] = 'K';
+            debug_video[dbg_offset + 7] = 0x0E;
+            debug_video[dbg_offset + 8] = ':';
+            debug_video[dbg_offset + 9] = 0x0E;
+
+            if (parent == NULL) {
+                /* parent 是 NULL */
+                debug_video[dbg_offset + 10] = 'N';
+                debug_video[dbg_offset + 11] = 0x0C;
+                debug_video[dbg_offset + 12] = 'U';
+                debug_video[dbg_offset + 13] = 0x0C;
+                debug_video[dbg_offset + 14] = 'L';
+                debug_video[dbg_offset + 15] = 0x0C;
+                debug_video[dbg_offset + 16] = 'L';
+                debug_video[dbg_offset + 17] = 0x0C;
+                ret = (uint32_t)-1;
+            } else {
+                /* parent 存在，显示 PID */
+                debug_video[dbg_offset + 10] = 'P';
+                debug_video[dbg_offset + 11] = 0x0A;
+                debug_video[dbg_offset + 12] = 'I';
+                debug_video[dbg_offset + 13] = 0x0A;
+                debug_video[dbg_offset + 14] = 'D';
+                debug_video[dbg_offset + 15] = 0x0A;
+                debug_video[dbg_offset + 16] = '0' + parent->pid;
+                debug_video[dbg_offset + 17] = 0x0A;
+
+                /* 分配 PID */
+                uint32_t pid = 0;
+                for (uint32_t i = 1; i < MAX_PROCESSES; i++) {
+                    if (process_find_by_pid(i) == NULL) {
+                        pid = i;
+                        break;
+                    }
+                }
+
+                /* 显示找到的 PID */
+                debug_video[dbg_offset + 18] = 'N';
+                debug_video[dbg_offset + 19] = 0x0B;
+                debug_video[dbg_offset + 20] = '0' + pid;
+                debug_video[dbg_offset + 21] = 0x0B;
+
+                if (pid == 0) {
+                    ret = (uint32_t)-1;
+                } else {
+                    /* 分配 PCB */
+                    struct process *child = (struct process *)kmalloc(sizeof(struct process));
+                    if (child == NULL) {
+                        debug_video[dbg_offset + 22] = 'M';
+                        debug_video[dbg_offset + 23] = 0x0C;
+                        ret = (uint32_t)-1;
+                    } else {
+                        /* 复制父进程的上下文（从中断帧） */
+                        child->pid = pid;
+                        child->state = PROCESS_READY;
+                        child->priority = parent->priority;
+                        child->time_slice = parent->time_slice;
+                        child->ticks_remaining = child->time_slice;
+
+                        /* 复制 CPU 上下文 - 直接从中断帧复制 */
+                        child->context = *frame;
+                        child->context.eax = 0;  /* 子进程返回 0 */
+
+                        /* 分配新的内核栈（必须有，用于中断处理） */
+                        uint32_t stack_base = 0x200000 + pid * (KERNEL_STACK_SIZE + PROCESS_STACK_SIZE);
+                        child->kernel_stack = stack_base + KERNEL_STACK_SIZE;
+                        child->user_stack = parent->user_stack;  /* 共享用户栈地址 */
+
+                        /* 设置进程树关系 */
+                        child->parent = parent;
+                        child->first_child = NULL;
+                        child->next_sibling = parent->first_child;
+                        parent->first_child = child;
+                        child->next = NULL;
+
+                        /* 加入就绪队列 */
+                        process_unblock(child);
+
+                        /* 成功! */
+                        debug_video[dbg_offset + 22] = 'O';
+                        debug_video[dbg_offset + 23] = 0x0A;
+                        debug_video[dbg_offset + 24] = 'K';
+                        debug_video[dbg_offset + 25] = 0x0A;
+
+                        /* 父进程返回子进程 PID */
+                        ret = pid;
+                    }
+                }
+            }
+        } else if (syscall_num == SYS_EXEC) {
+            /* exec 需要修改 frame */
+            struct process *proc = process_get_current();
+            if (proc != NULL) {
+                /* 重置上下文 - 直接修改 frame */
+                frame->eip = arg1;
+                frame->cs = 0x1B;
+                frame->eflags = 0x202;
+                frame->useresp = proc->user_stack;
+                frame->ss = 0x23;
+                frame->eax = 0;
+                frame->ebx = 0;
+                frame->ecx = 0;
+                frame->edx = 0;
+                frame->ebp = 0;
+                frame->esi = 0;
+                frame->edi = 0;
+
+                /* 同步更新 PCB */
+                proc->context = *frame;
+                proc->ticks_remaining = proc->time_slice;
+            }
+            ret = 0;
+        } else if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
+            ret = syscall_table[syscall_num](arg1, arg2, arg3);
+        }
+
+        /* 返回值放在 eax */
     frame->eax = ret;
 }
 

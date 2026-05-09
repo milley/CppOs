@@ -85,12 +85,6 @@ void yield(void);
 void process_block(struct process *proc);
 void process_unblock(struct process *proc);
 
-/* 系统调用处理 */
-uint32_t sys_fork_handler(void);
-uint32_t sys_exec_handler(uint32_t entry);
-uint32_t sys_wait_handler(uint32_t *status);
-void sys_exit_handler_internal(int status);
-
 /* 上下文切换 */
 void switch_to_first(struct process *proc);
 

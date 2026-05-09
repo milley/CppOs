@@ -15,6 +15,9 @@
 #define SYS_PUTS        5   /* 打印字符串 */
 #define SYS_PUTC        6   /* 打印字符 */
 #define SYS_GETTICKS    7   /* 获取时钟计数 */
+#define SYS_FORK        8   /* 创建子进程 */
+#define SYS_EXEC        9   /* 执行程序 */
+#define SYS_WAIT        10  /* 等待子进程 */
 
 /* 系统调用宏（用户程序使用） */
 #define syscall0(num) ({ \
@@ -88,6 +91,18 @@ static inline int sys_read(int fd, char *buf, uint32_t count) {
 
 static inline int sys_write(int fd, const char *buf, uint32_t count) {
     return syscall3(SYS_WRITE, (uint32_t)fd, (uint32_t)buf, count);
+}
+
+static inline int sys_fork(void) {
+    return syscall0(SYS_FORK);
+}
+
+static inline int sys_exec(void (*entry)(void)) {
+    return syscall1(SYS_EXEC, (uint32_t)entry);
+}
+
+static inline int sys_wait(int *status) {
+    return syscall1(SYS_WAIT, (uint32_t)status);
 }
 
 /* 函数声明 */
