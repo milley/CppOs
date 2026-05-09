@@ -42,7 +42,13 @@ tss.o: tss.c
 allocator.o: allocator.c
 	$(CC) $(CFLAGS) allocator.c -o allocator.o
 
-kernel.bin: kernel_entry.o kernel.o idt.o idt_asm.o pic.o syscall.o usermode.o usermode_asm.o tss.o allocator.o
+process.o: process.c
+	$(CC) $(CFLAGS) process.c -o process.o
+
+context_switch.o: context_switch.asm
+	$(AS) -f elf32 context_switch.asm -o context_switch.o
+
+kernel.bin: kernel_entry.o kernel.o idt.o idt_asm.o pic.o syscall.o usermode.o usermode_asm.o tss.o allocator.o process.o context_switch.o
 	$(LD) -m elf_i386 -Ttext 0x7E00 -o kernel_elf.elf $^
 	$(OBJCOPY) -O binary kernel_elf.elf kernel.bin
 

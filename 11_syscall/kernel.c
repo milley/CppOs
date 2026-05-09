@@ -1,11 +1,13 @@
 /* kernel.c - 测试系统调用 */
 
 #include <stdint.h>
+#include <stddef.h>
 #include "idt.h"
 #include "pic.h"
 #include "syscall.h"
 #include "usermode.h"
 #include "allocator.h"
+#include "process.h"
 
 #define VIDEO_MEMORY 0xB8000
 #define MAX_COLS 80
@@ -13,6 +15,7 @@
 #define WHITE_ON_BLACK 0x0F
 #define GREEN_ON_BLACK 0x0A
 #define CYAN_ON_BLACK  0x0B
+#define RED_ON_BLACK   0x0C
 
 static int cursor_col = 0;
 static int cursor_row = 0;
@@ -93,6 +96,15 @@ void timer_handler(struct interrupt_frame *frame) {
     video[offset] = '0' + (secs % 10);
     video[offset + 1] = CYAN_ON_BLACK;
 
+    /* 进程调度 */
+    struct process *current = process_get_current();
+    if (current != NULL) {
+        current->ticks_remaining--;
+        if (current->ticks_remaining == 0) {
+            schedule_from_interrupt(frame);
+        }
+    }
+
     pic_send_eoi(0);
 }
 
@@ -141,11 +153,104 @@ void user_program(void) {
     }
 }
 
+/* 测试进程 1 */
+void test_process_1(void) {
+    uint32_t pid = sys_getpid();
+    char *video = (char *)0xB8000;
+    int count = 0;
+
+    while (1) {
+        /* 在第 5 行显示 PID 和计数 */
+        int offset = 5 * 160;
+        video[offset] = 'P';
+        video[offset + 1] = RED_ON_BLACK;
+        video[offset + 2] = '1';
+        video[offset + 3] = RED_ON_BLACK;
+        video[offset + 4] = ':';
+        video[offset + 5] = RED_ON_BLACK;
+        video[offset + 6] = '0' + pid;
+        video[offset + 7] = RED_ON_BLACK;
+        video[offset + 8] = ' ';
+        video[offset + 9] = RED_ON_BLACK;
+        video[offset + 10] = 'C';
+        video[offset + 11] = RED_ON_BLACK;
+        video[offset + 12] = '0' + (count % 10);
+        video[offset + 13] = RED_ON_BLACK;
+
+        /* 忙等待 - 让出 CPU */
+        for (volatile int i = 0; i < 100000; i++);
+
+        count++;
+    }
+}
+
+/* 测试进程 2 */
+void test_process_2(void) {
+    uint32_t pid = sys_getpid();
+    char *video = (char *)0xB8000;
+    int count = 0;
+
+    while (1) {
+        /* 在第 6 行显示 PID 和计数 */
+        int offset = 6 * 160;
+        video[offset] = 'P';
+        video[offset + 1] = GREEN_ON_BLACK;
+        video[offset + 2] = '2';
+        video[offset + 3] = GREEN_ON_BLACK;
+        video[offset + 4] = ':';
+        video[offset + 5] = GREEN_ON_BLACK;
+        video[offset + 6] = '0' + pid;
+        video[offset + 7] = GREEN_ON_BLACK;
+        video[offset + 8] = ' ';
+        video[offset + 9] = GREEN_ON_BLACK;
+        video[offset + 10] = 'C';
+        video[offset + 11] = GREEN_ON_BLACK;
+        video[offset + 12] = '0' + (count % 10);
+        video[offset + 13] = GREEN_ON_BLACK;
+
+        /* 忙等待 - 让出 CPU */
+        for (volatile int i = 0; i < 100000; i++);
+
+        count++;
+    }
+}
+
+/* 测试进程 3 */
+void test_process_3(void) {
+    uint32_t pid = sys_getpid();
+    char *video = (char *)0xB8000;
+    int count = 0;
+
+    while (1) {
+        /* 在第 7 行显示 PID 和计数 */
+        int offset = 7 * 160;
+        video[offset] = 'P';
+        video[offset + 1] = CYAN_ON_BLACK;
+        video[offset + 2] = '3';
+        video[offset + 3] = CYAN_ON_BLACK;
+        video[offset + 4] = ':';
+        video[offset + 5] = CYAN_ON_BLACK;
+        video[offset + 6] = '0' + pid;
+        video[offset + 7] = CYAN_ON_BLACK;
+        video[offset + 8] = ' ';
+        video[offset + 9] = CYAN_ON_BLACK;
+        video[offset + 10] = 'C';
+        video[offset + 11] = CYAN_ON_BLACK;
+        video[offset + 12] = '0' + (count % 10);
+        video[offset + 13] = CYAN_ON_BLACK;
+
+        /* 忙等待 - 让出 CPU */
+        for (volatile int i = 0; i < 100000; i++);
+
+        count++;
+    }
+}
+
 void kernel_main(void) {
     clear_screen();
 
     print_string("========================================\n");
-    print_string("   MyOS - System Call Demo\n");
+    print_string("   MyOS - Multi-Process Demo\n");
     print_string("========================================\n\n");
 
     /* 初始化分配器 */
@@ -173,15 +278,20 @@ void kernel_main(void) {
     syscall_init();
     print_string("  Done!\n\n");
 
+    /* 初始化进程管理 */
+    print_string("Step 6: Initialize process manager...\n");
+    scheduler_init();
+    print_string("  Done!\n\n");
+
     /* 注册中断处理函数 */
-    print_string("Step 6: Register interrupt handlers...\n");
+    print_string("Step 7: Register interrupt handlers...\n");
     idt_register_handler(IRQ_TIMER, timer_handler);
     idt_register_handler(IRQ_KEYBOARD, keyboard_handler);
     print_string("  Timer handler registered\n");
     print_string("  Keyboard handler registered\n\n");
 
     /* 启用中断 */
-    print_string("Step 7: Enable interrupts...\n");
+    print_string("Step 8: Enable interrupts...\n");
     enable_interrupts();
     pic_unmask_irq(0);
     pic_unmask_irq(1);
@@ -202,16 +312,29 @@ void kernel_main(void) {
     video[offset + 9] = CYAN_ON_BLACK;
 
     print_string("========================================\n");
-    print_string("   Switching to user mode...\n");
+    print_string("   Creating processes...\n");
     print_string("========================================\n\n");
 
-    /* 分配用户栈 */
-    void *stack = (void *)0x200000;  /* 使用固定地址 */
-    uint32_t stack_top = (uint32_t)stack + USER_STACK_SIZE;
+    /* 创建多个进程 */
+    struct process *proc1 = process_create(test_process_1, PRIORITY_NORMAL);
+    struct process *proc2 = process_create(test_process_2, PRIORITY_NORMAL);
+    struct process *proc3 = process_create(test_process_3, PRIORITY_NORMAL);
 
-    /* 切换到用户模式 */
-    jump_to_usermode(user_program, stack_top);
+    if (proc1) print_string("  Process 1 created (PID: 1)\n");
+    if (proc2) print_string("  Process 2 created (PID: 2)\n");
+    if (proc3) print_string("  Process 3 created (PID: 3)\n\n");
 
+    print_string("========================================\n");
+    print_string("   Starting scheduler...\n");
+    print_string("========================================\n\n");
+
+    /* 启动第一个进程 */
+    if (proc1) {
+        process_set_current(proc1);
+        switch_to_first(proc1);
+    }
+
+    /* 如果进程切换失败，进入无限循环 */
     while (1) {
         __asm__ volatile("hlt");
     }
