@@ -66,15 +66,21 @@ process.o: process.c process.h paging.h
 disk.o: disk.c disk.h
 	$(CC) $(CFLAGS) disk.c -o disk.o
 
+string.o: string.c string.h
+	$(CC) $(CFLAGS) string.c -o string.o
+
+filesystem.o: filesystem.c filesystem.h
+	$(CC) $(CFLAGS) filesystem.c -o filesystem.o
+
 kernel.bin: kernel_entry.o kernel.o idt.o idt_asm.o pic.o syscall.o \
             usermode.o usermode_asm.o tss.o allocator.o paging.o \
-            process.o context_switch.o disk.o
+            process.o context_switch.o disk.o string.o filesystem.o
 	$(LD) -m elf_i386 -Ttext 0x7E00 -o kernel_elf.elf $^
 	$(OBJCOPY) -O binary kernel_elf.elf kernel.bin
 
 os.bin: bootloader.bin kernel.bin
 	cat bootloader.bin kernel.bin > os.bin
-	truncate -s 17920 os.bin
+	truncate -s 23552 os.bin
 
 run: os.bin disk.img
 	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a

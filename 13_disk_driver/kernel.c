@@ -1,4 +1,4 @@
-/* kernel.c - 测试磁盘驱动 */
+/* kernel.c - 测试磁盘驱动和文件系统 */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -10,6 +10,7 @@
 #include "process.h"
 #include "paging.h"
 #include "disk.h"
+#include "filesystem.h"
 
 #define VIDEO_MEMORY 0xB8000
 #define MAX_COLS 80
@@ -126,7 +127,7 @@ static uint8_t test_buffer[DISK_SECTOR_SIZE * 2];
 void kernel_main(void) {
     clear_screen();
 
-    print_string("=== Disk Driver Test ===\n\n");
+    print_string("=== File System Test ===\n\n");
 
     print_string("Init allocator...\n");
     allocator_init(0x100000, 0x100000);
@@ -142,49 +143,106 @@ void kernel_main(void) {
     disk_init();
 
     int disk_count = disk_get_count();
-    print_string("\nDisks: ");
-    print_int(disk_count);
-    print_string("\n\n");
-
-    if (disk_count > 0) {
-        disk_t *disk = disk_get_primary();
-        if (disk != NULL) {
-            print_string("Model: ");
-            print_string(disk->model);
-            print_string("\n");
-            print_string("Sectors: ");
-            print_hex64(disk->sectors);
-            print_string("\n");
-            print_string("Size: ");
-            print_int((uint32_t)(disk->sectors / 2048));
-            print_string(" MB\n\n");
-        }
-
-        print_string("Read sector 0...\n");
-        if (disk_read_sectors(disk, 0, 1, test_buffer) == 0) {
-            print_string("  OK! Bytes: ");
-            for (int i = 0; i < 8; i++) {
-                char hex[] = "0123456789ABCDEF";
-                print_char(hex[(test_buffer[i] >> 4) & 0xF]);
-                print_char(hex[test_buffer[i] & 0xF]);
-                print_char(' ');
-            }
-            print_string("\n");
-            if (test_buffer[510] == 0x55 && test_buffer[511] == 0xAA) {
-                print_string("  MBR valid!\n");
-            }
-        } else {
-            print_string("  Failed!\n");
-        }
+    if (disk_count == 0) {
+        print_string("No disk found!\n");
+        while (1) { __asm__ volatile("hlt"); }
     }
 
-    print_string("\nEnable interrupts...\n");
-    idt_register_handler(IRQ_TIMER, timer_handler);
-    idt_register_handler(IRQ_KEYBOARD, keyboard_handler);
-    enable_interrupts();
-    pic_unmask_irq(0);
-    pic_unmask_irq(1);
-    print_string("Done!\n");
+    disk_t *disk = disk_get_primary();
+    print_string("Disk: ");
+    print_string(disk->model);
+    print_string("\n\n");
+
+    /* 测试文件系统 */
+    print_string("=== Format Disk ===\n");
+    if (fs_format(disk) == 0) {
+        print_string("Format OK!\n\n");
+    } else {
+        print_string("Format failed!\n");
+        while (1) { __asm__ volatile("hlt"); }
+    }
+
+    /* 创建文件 */
+    print_string("=== Create File ===\n");
+    if (fs_create("test.txt") == 0) {
+        print_string("Created: test.txt\n");
+    } else {
+        print_string("Create failed!\n");
+    }
+
+    if (fs_create("hello.txt") == 0) {
+        print_string("Created: hello.txt\n");
+    }
+    print_string("\n");
+
+    /* 写入文件 */
+    print_string("=== Write File ===\n");
+    int fd = fs_open("test.txt", FS_MODE_WRITE);
+    if (fd >= 0) {
+        const char *msg = "Hello, File System!";
+        int n = fs_write(fd, msg, 19);
+        print_string("Wrote ");
+        print_int(n);
+        print_string(" bytes to test.txt\n");
+        fs_close(fd);
+    }
+
+    fd = fs_open("hello.txt", FS_MODE_WRITE);
+    if (fd >= 0) {
+        const char *msg = "Welcome to MyOS!";
+        int n = fs_write(fd, msg, 16);
+        print_string("Wrote ");
+        print_int(n);
+        print_string(" bytes to hello.txt\n");
+        fs_close(fd);
+    }
+    print_string("\n");
+
+    /* 读取文件 */
+    print_string("=== Read File ===\n");
+    fd = fs_open("test.txt", FS_MODE_READ);
+    if (fd >= 0) {
+        char buf[32];
+        int n = fs_read(fd, buf, 32);
+        buf[n] = '\0';
+        print_string("Read from test.txt: ");
+        print_string(buf);
+        print_string("\n");
+        fs_close(fd);
+    }
+
+    fd = fs_open("hello.txt", FS_MODE_READ);
+    if (fd >= 0) {
+        char buf[32];
+        int n = fs_read(fd, buf, 32);
+        buf[n] = '\0';
+        print_string("Read from hello.txt: ");
+        print_string(buf);
+        print_string("\n");
+        fs_close(fd);
+    }
+    print_string("\n");
+
+    /* 列出文件 */
+    print_string("=== List Files ===\n");
+    int count = fs_list();
+    print_string("Total files: ");
+    print_int(count);
+    print_string("\n");
+
+    /* 删除文件 */
+    print_string("\n=== Delete File ===\n");
+    if (fs_delete("hello.txt") == 0) {
+        print_string("Deleted: hello.txt\n");
+    }
+
+    count = fs_list();
+    print_string("Remaining files: ");
+    print_int(count);
+    print_string("\n\n");
+
+    print_string("=== Test Complete ===\n");
+    print_string("File system working!\n");
 
     while (1) { __asm__ volatile("hlt"); }
 }
