@@ -91,4 +91,7 @@ int32_t fs_size(int fd);
 /* 同步到磁盘 */
 int fs_sync(void);
 
+/* 获取根目录 (供 Shell 使用) */
+dir_entry_t* fs_get_root_dir(void);
+
 #endif

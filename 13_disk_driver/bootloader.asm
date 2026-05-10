@@ -4,7 +4,7 @@
 [ORG 0x7C00]
 
 KERNEL_START   equ 0x7E00
-KERNEL_SECTORS equ 45
+KERNEL_SECTORS equ 56
 
 start:
     cli

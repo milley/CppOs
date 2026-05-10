@@ -442,3 +442,7 @@ int fs_sync(void) {
 
     return 0;
 }
+
+dir_entry_t* fs_get_root_dir(void) {
+    return root_dir;
+}
