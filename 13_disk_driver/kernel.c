@@ -13,6 +13,7 @@
 #include "filesystem.h"
 #include "keyboard.h"
 #include "shell.h"
+#include "tss.h"
 
 #define VIDEO_MEMORY 0xB8000
 #define MAX_COLS 80
@@ -178,9 +179,39 @@ void kernel_main(void) {
     pic_unmask_irq(0);
     pic_unmask_irq(1);
 
+    print_string("Init scheduler...\n");
+    scheduler_init();
+
+    /* 创建一个内核态 "init" 进程用于 fork 测试 */
+    /* 这允许 shell 使用 fork，因为 current_process 将不为 NULL */
+    struct process *init_proc = (struct process*)kmalloc(sizeof(struct process));
+    if (init_proc != NULL) {
+        init_proc->pid = 1;
+        init_proc->state = PROCESS_RUNNING;
+        init_proc->priority = PRIORITY_NORMAL;
+        init_proc->time_slice = DEFAULT_TIME_SLICE;
+        init_proc->ticks_remaining = DEFAULT_TIME_SLICE;
+        init_proc->exit_status = 0;
+        init_proc->kernel_stack = 0x300000 + KERNEL_STACK_SIZE;  /* 内核栈 */
+        init_proc->user_stack = 0x400000 + USER_STACK_SIZE;       /* 用户栈 */
+        init_proc->user_stack_top = init_proc->user_stack;
+        init_proc->address_space = NULL;
+        init_proc->parent = NULL;
+        init_proc->first_child = NULL;
+        init_proc->next_sibling = NULL;
+        init_proc->next = NULL;
+        for (int i = 0; i < MAX_OPEN_FILES; i++) {
+            init_proc->open_files[i] = -1;
+        }
+        /* 注册到进程表 */
+        process_register(init_proc);
+        /* 设为当前进程 */
+        process_set_current(init_proc);
+    }
+
     print_string("Boot complete!\n\n");
 
-    /* 启动 Shell */
+    /* 启动 Shell - 在内核态运行 */
     shell_init();
     shell_run();
 

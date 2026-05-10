@@ -74,6 +74,38 @@ isr_common:
     ; 中断返回
     iret
 
+; 内核态中断返回（不弹出 useresp/ss）
+global iret_kernel
+iret_kernel:
+    ; 恢复通用寄存器
+    pop eax
+    pop ecx
+    pop edx
+    pop ebx
+    pop ebp
+    pop esi
+    pop edi
+
+    ; 恢复段寄存器
+    pop ds
+    pop es
+    pop fs
+    pop gs
+
+    ; 清理错误码和中断号
+    add esp, 8
+
+    ; 对于内核态，只弹出 eip, cs, eflags
+    pop eax         ; eip
+    pop ecx         ; cs
+    pop edx         ; eflags
+
+    ; 直接跳转返回（不使用 iret，因为我们已经手动处理了）
+    push edx        ; eflags
+    push ecx        ; cs
+    push eax        ; eip
+    iret
+
 ; 异常处理入口（0-31）
 ; 有错误码的异常：8, 10, 11, 12, 13, 14, 17
 ISR_NOERRCODE 0     ; Divide Error
@@ -166,7 +198,14 @@ syscall_entry:
     call interrupt_handler
     add esp, 4
 
-    ; 恢复通用寄存器
+    ; 检查返回时的 CS，判断是否需要弹出 useresp/ss
+    ; 获取栈上的 CS（在 eflags 之后的下一个位置）
+    mov eax, [esp + 44]     ; CS 在偏移 44 处（8 个通用寄存器 + 4 个段寄存器 + int_no + err_code + eip）
+    and eax, 3              ; 检查 CPL
+    cmp eax, 0
+    je .kernel_mode_return
+
+    ; 用户态返回 - 标准 iret
     pop eax
     pop ecx
     pop edx
@@ -174,17 +213,29 @@ syscall_entry:
     pop ebp
     pop esi
     pop edi
-
-    ; 恢复段寄存器
     pop ds
     pop es
     pop fs
     pop gs
-
-    ; 清理错误码和中断号
     add esp, 8
+    iret
 
-    ; 中断返回
+.kernel_mode_return:
+    ; 内核态返回 - 不弹出 useresp/ss
+    pop eax
+    pop ecx
+    pop edx
+    pop ebx
+    pop ebp
+    pop esi
+    pop edi
+    pop ds
+    pop es
+    pop fs
+    pop gs
+    add esp, 8
+    ; 内核态 iret：只弹出 eip, cs, eflags
+    ; 但栈上没有 useresp/ss，直接 iret 即可
     iret
 
 ; IDT 处理函数地址数组

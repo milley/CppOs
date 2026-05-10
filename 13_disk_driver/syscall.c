@@ -8,6 +8,7 @@
 #include "tss.h"
 #include "filesystem.h"
 #include "keyboard.h"
+#include "string.h"
 
 /* 时钟计数（外部定义） */
 extern uint32_t timer_ticks;
@@ -16,25 +17,35 @@ extern uint32_t timer_ticks;
 static uint32_t sys_exit_handler(int status) {
     struct process *proc = process_get_current();
     if (proc == NULL) {
-        /* 没有进程，直接挂起 */
         while (1) {
             __asm__ volatile("hlt");
         }
     }
 
-    /* 设置退出状态 */
-    proc->state = PROCESS_ZOMBIE;
-    proc->ticks_remaining = 0;  /* 让调度器不再运行此进程 */
+    /* 保存退出状态 */
+    proc->exit_status = status;
 
-    /* 保存退出码（简化版：存储在 priority 字段） */
-    proc->priority = status;
+    /* 关闭所有打开的文件 */
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (proc->open_files[i] >= 0) {
+            fs_close(proc->open_files[i]);
+            proc->open_files[i] = -1;
+        }
+    }
+
+    /* 将子进程重新设置为 init 的子进程 */
+    process_reparent_children(proc);
+
+    /* 设置为僵尸状态 */
+    proc->state = PROCESS_ZOMBIE;
+    proc->ticks_remaining = 0;
 
     /* 如果父进程在等待，唤醒它 */
     if (proc->parent != NULL && proc->parent->state == PROCESS_BLOCKED) {
         process_unblock(proc->parent);
     }
 
-    /* 触发调度（进程已为 ZOMBIE，调度器会选择其他进程） */
+    /* 触发调度 */
     schedule();
 
     /* 不应该到达这里 */
@@ -206,16 +217,19 @@ static uint32_t sys_getpid_handler(void) {
 static uint32_t sys_wait_handler(uint32_t *status) {
     struct process *parent = process_get_current();
     if (parent == NULL) {
-        return -1;
+        return (uint32_t)-1;
     }
 
+wait_again:
     /* 检查是否有子进程 */
     if (parent->first_child == NULL) {
-        return -1;  /* 无子进程 */
+        return (uint32_t)-1;
     }
 
     /* 查找僵尸子进程 */
     struct process *child = parent->first_child;
+    struct process *prev = NULL;
+
     while (child != NULL) {
         if (child->state == PROCESS_ZOMBIE) {
             /* 找到僵尸进程，回收 */
@@ -223,27 +237,23 @@ static uint32_t sys_wait_handler(uint32_t *status) {
 
             /* 保存退出状态 */
             if (status != NULL) {
-                *status = child->priority;  /* 退出码存储在 priority */
+                *status = child->exit_status;
             }
 
             /* 从子进程列表移除 */
-            if (parent->first_child == child) {
+            if (prev == NULL) {
                 parent->first_child = child->next_sibling;
             } else {
-                struct process *prev = parent->first_child;
-                while (prev != NULL && prev->next_sibling != child) {
-                    prev = prev->next_sibling;
-                }
-                if (prev != NULL) {
-                    prev->next_sibling = child->next_sibling;
-                }
+                prev->next_sibling = child->next_sibling;
             }
 
-            /* 释放 PCB */
+            /* 从进程表中移除 */
+            process_find_by_pid(child->pid);  /* 确保 PID 有效 */
             kfree(child);
 
             return child_pid;
         }
+        prev = child;
         child = child->next_sibling;
     }
 
@@ -251,8 +261,8 @@ static uint32_t sys_wait_handler(uint32_t *status) {
     process_block(parent);
     schedule();
 
-    /* 被唤醒后再次检查（简化版：返回 -1 让用户重试） */
-    return -1;
+    /* 被唤醒后再次检查 */
+    goto wait_again;
 }
 
 /* ==================== 文件系统调用 ==================== */
@@ -442,15 +452,27 @@ void syscall_handler(struct interrupt_frame *frame) {
                         child->priority = parent->priority;
                         child->time_slice = parent->time_slice;
                         child->ticks_remaining = child->time_slice;
+                        child->exit_status = 0;
+
+                        /* 初始化文件描述符表 */
+                        for (int i = 0; i < MAX_OPEN_FILES; i++) {
+                            child->open_files[i] = -1;
+                        }
 
                         /* 复制 CPU 上下文 - 直接从中断帧复制 */
                         child->context = *frame;
                         child->context.eax = 0;  /* 子进程返回 0 */
 
-                        /* 分配新的内核栈（必须有，用于中断处理） */
-                        uint32_t stack_base = 0x200000 + pid * (KERNEL_STACK_SIZE + PROCESS_STACK_SIZE);
-                        child->kernel_stack = stack_base + KERNEL_STACK_SIZE;
-                        child->user_stack = parent->user_stack;  /* 共享用户栈地址 */
+                        /* 分配独立的栈空间 - 使用与 process_create 相同的公式 */
+                        child->kernel_stack = KERNEL_STACK_BASE + pid * KERNEL_STACK_SIZE + KERNEL_STACK_SIZE;
+                        child->user_stack = USER_STACK_BASE + pid * USER_STACK_SIZE + USER_STACK_SIZE;
+                        child->user_stack_top = child->user_stack;  /* 栈顶，向下增长 */
+
+                        /* 地址空间 - 简化版：共享父进程地址空间 */
+                        child->address_space = parent->address_space;
+
+                        /* 对于内核态进程，直接使用父进程的栈信息 */
+                        /* 子进程会在调度时从 frame 恢复上下文，返回到 sys_fork 调用点 */
 
                         /* 设置进程树关系 */
                         child->parent = parent;
@@ -458,6 +480,9 @@ void syscall_handler(struct interrupt_frame *frame) {
                         child->next_sibling = parent->first_child;
                         parent->first_child = child;
                         child->next = NULL;
+
+                        /* 注册到进程表 */
+                        process_register(child);
 
                         /* 加入就绪队列 */
                         process_unblock(child);

@@ -1,4 +1,4 @@
-/* process.c - 进程管理实现（支持分页） */
+/* process.c - 进程管理实现 */
 
 #include <stddef.h>
 #include "process.h"
@@ -11,8 +11,6 @@
 static struct process *process_table[MAX_PROCESSES];
 struct process *current_process = NULL;
 static struct process *ready_queue = NULL;
-static uint32_t next_kernel_stack = 0x300000;
-static uint32_t next_user_stack = 0x400000;  /* 用户栈从 4MB 开始 */
 
 static uint32_t allocate_pid(void) {
     for (uint32_t i = 1; i < MAX_PROCESSES; i++) {
@@ -43,17 +41,21 @@ struct process* process_create(void (*entry)(void), uint32_t priority) {
         return NULL;
     }
 
-    /* 分配内核栈 */
-    proc->kernel_stack = next_kernel_stack;
-    next_kernel_stack += KERNEL_STACK_SIZE;
-
-    /* 分配用户栈（平坦内存模型：使用物理地址） */
-    proc->user_stack = next_user_stack + PROCESS_STACK_SIZE;
-    next_user_stack += PROCESS_STACK_SIZE;
+    /* 基于 PID 分配栈 - 每个进程独立的栈空间 */
+    proc->kernel_stack = KERNEL_STACK_BASE + pid * KERNEL_STACK_SIZE + KERNEL_STACK_SIZE;
+    proc->user_stack = USER_STACK_BASE + pid * USER_STACK_SIZE + USER_STACK_SIZE;
+    proc->user_stack_top = proc->user_stack;
 
     proc->pid = pid;
     proc->state = PROCESS_READY;
     proc->priority = priority;
+    proc->exit_status = 0;
+
+    /* 初始化文件描述符表 */
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        proc->open_files[i] = -1;
+    }
+
     proc->parent = NULL;
     proc->first_child = NULL;
     proc->next_sibling = NULL;
@@ -70,6 +72,72 @@ struct process* process_create(void (*entry)(void), uint32_t priority) {
     proc->context.es = 0x23;
     proc->context.fs = 0x23;
     proc->context.gs = 0x23;
+    proc->context.eax = 0;
+    proc->context.ebx = 0;
+    proc->context.ecx = 0;
+    proc->context.edx = 0;
+    proc->context.ebp = 0;
+    proc->context.esi = 0;
+    proc->context.edi = 0;
+    proc->context.int_no = 0;
+    proc->context.err_code = 0;
+
+    process_table[pid] = proc;
+
+    if (ready_queue == NULL) {
+        ready_queue = proc;
+    } else {
+        struct process *p = ready_queue;
+        while (p->next != NULL) p = p->next;
+        p->next = proc;
+    }
+
+    return proc;
+}
+
+/* 创建内核态进程 */
+struct process* process_create_kernel(void (*entry)(void), uint32_t priority) {
+    uint32_t pid = allocate_pid();
+    if (pid == 0) return NULL;
+
+    struct process *proc = (struct process*)kmalloc(sizeof(struct process));
+    if (proc == NULL) return NULL;
+
+    /* 内核态进程不需要独立的地址空间 */
+    proc->address_space = NULL;
+
+    /* 基于 PID 分配内核栈 */
+    proc->kernel_stack = KERNEL_STACK_BASE + pid * KERNEL_STACK_SIZE + KERNEL_STACK_SIZE;
+    proc->user_stack = 0;  /* 内核态进程不使用用户栈 */
+    proc->user_stack_top = 0;
+
+    proc->pid = pid;
+    proc->state = PROCESS_READY;
+    proc->priority = priority;
+    proc->exit_status = 0;
+
+    /* 初始化文件描述符表 */
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        proc->open_files[i] = -1;
+    }
+
+    proc->parent = NULL;
+    proc->first_child = NULL;
+    proc->next_sibling = NULL;
+    proc->next = NULL;
+    proc->time_slice = DEFAULT_TIME_SLICE;
+    proc->ticks_remaining = proc->time_slice;
+
+    /* 内核态进程上下文 */
+    proc->context.eip = (uint32_t)entry;
+    proc->context.cs = 0x08;        /* 内核代码段 */
+    proc->context.eflags = 0x202;
+    proc->context.useresp = proc->kernel_stack;  /* 使用内核栈 */
+    proc->context.ss = 0x10;        /* 内核数据段 */
+    proc->context.ds = 0x10;
+    proc->context.es = 0x10;
+    proc->context.fs = 0x10;
+    proc->context.gs = 0x10;
     proc->context.eax = 0;
     proc->context.ebx = 0;
     proc->context.ecx = 0;
@@ -236,4 +304,55 @@ void process_unblock(struct process *proc) {
         while (p->next != NULL) p = p->next;
         p->next = proc;
     }
+}
+
+/* 关闭进程所有打开的文件 */
+void process_close_all_files(struct process *proc) {
+    if (proc == NULL) return;
+
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (proc->open_files[i] >= 0) {
+            /* 这里需要调用 fs_close，但要避免循环依赖 */
+            /* 在 syscall.c 中处理 */
+            proc->open_files[i] = -1;
+        }
+    }
+}
+
+/* 重新设置子进程的父进程 (当父进程退出时) */
+void process_reparent_children(struct process *proc) {
+    if (proc == NULL) return;
+
+    struct process *child = proc->first_child;
+    while (child != NULL) {
+        struct process *next = child->next_sibling;
+
+        /* 将子进程的父进程设为 init (PID 1) */
+        struct process *init = process_find_by_pid(1);
+        if (init != NULL) {
+            child->parent = init;
+            child->next_sibling = init->first_child;
+            init->first_child = child;
+        }
+
+        /* 如果子进程是僵尸状态，唤醒 init */
+        if (child->state == PROCESS_ZOMBIE && init != NULL && init->state == PROCESS_BLOCKED) {
+            process_unblock(init);
+        }
+
+        child = next;
+    }
+    proc->first_child = NULL;
+}
+
+/* 注册进程到进程表 */
+void process_register(struct process *proc) {
+    if (proc == NULL || proc->pid >= MAX_PROCESSES) return;
+    process_table[proc->pid] = proc;
+}
+
+/* 从进程表移除进程 */
+void process_unregister(struct process *proc) {
+    if (proc == NULL || proc->pid >= MAX_PROCESSES) return;
+    process_table[proc->pid] = NULL;
 }

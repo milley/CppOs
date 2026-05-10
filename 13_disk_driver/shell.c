@@ -4,6 +4,8 @@
 #include "keyboard.h"
 #include "filesystem.h"
 #include "string.h"
+#include "syscall.h"
+#include "process.h"
 
 #define VIDEO_MEMORY 0xB8000
 #define MAX_COLS 80
@@ -56,6 +58,8 @@ static void cmd_help(void) {
     print_string("  write <file> <text> - Write text to file\n");
     print_string("  echo <text>   - Print text\n");
     print_string("  ver           - Show OS version\n");
+    print_string("  fork          - Test fork/wait syscalls\n");
+    print_string("  pid           - Show current process ID\n");
 }
 
 /* 命令: clear */
@@ -196,6 +200,68 @@ static void cmd_ver(void) {
     print_string("Built with love for learning OS development\n");
 }
 
+/* 命令: pid */
+static void cmd_pid(void) {
+    uint32_t pid = sys_getpid();
+    print_string("Current PID: ");
+    print_int(pid);
+    print_string("\n");
+}
+
+/* 子进程测试函数 */
+static void child_process_func(void) {
+    uint32_t my_pid = sys_getpid();
+    print_string("  [Child] PID = ");
+    print_int(my_pid);
+    print_string("\n");
+
+    for (int i = 0; i < 3; i++) {
+        print_string("  [Child] working... ");
+        print_int(i + 1);
+        print_string("\n");
+        for (volatile int j = 0; j < 500000; j++);
+    }
+
+    print_string("  [Child] exiting with status 42\n");
+    sys_exit(42);
+}
+
+/* 命令: fork - 测试进程创建 */
+static void cmd_fork(void) {
+    print_string("Testing process creation...\n");
+
+    /* 使用 process_create_kernel 创建内核态子进程 */
+    extern struct process* process_create_kernel(void (*entry)(void), uint32_t priority);
+    struct process *child = process_create_kernel(child_process_func, PRIORITY_NORMAL);
+
+    if (child == NULL) {
+        print_string("  Failed to create child process!\n");
+        return;
+    }
+
+    /* 设置父进程关系 */
+    struct process *parent = process_get_current();
+    if (parent != NULL) {
+        child->parent = parent;
+        child->next_sibling = parent->first_child;
+        parent->first_child = child;
+    }
+
+    print_string("  [Parent] created child PID = ");
+    print_int(child->pid);
+    print_string("\n");
+
+    /* 等待子进程 */
+    int status = 0;
+    int waited = sys_wait(&status);
+
+    print_string("  [Parent] child ");
+    print_int(waited);
+    print_string(" exited with status ");
+    print_int(status);
+    print_string("\n");
+}
+
 /* 执行命令 */
 static void execute_command(char *cmd) {
     char command[32];
@@ -226,6 +292,10 @@ static void execute_command(char *cmd) {
         cmd_echo(cmd);
     } else if (strcmp(command, "ver") == 0) {
         cmd_ver();
+    } else if (strcmp(command, "fork") == 0) {
+        cmd_fork();
+    } else if (strcmp(command, "pid") == 0) {
+        cmd_pid();
     } else {
         print_string("Unknown command: ");
         print_string(command);

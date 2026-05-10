@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-#define USER_STACK_SIZE 4096
+/* USER_STACK_SIZE 在 process.h 中定义 */
 
 typedef void (*user_entry_t)(void);
 
