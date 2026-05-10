@@ -6,6 +6,8 @@
 #include "process.h"
 #include "allocator.h"
 #include "tss.h"
+#include "filesystem.h"
+#include "keyboard.h"
 
 /* 时钟计数（外部定义） */
 extern uint32_t timer_ticks;
@@ -253,6 +255,82 @@ static uint32_t sys_wait_handler(uint32_t *status) {
     return -1;
 }
 
+/* ==================== 文件系统调用 ==================== */
+
+/* 系统调用：打开文件 */
+static uint32_t sys_open_handler(const char *name, uint32_t mode, uint32_t unused) {
+    (void)unused;
+    if (name == NULL) return (uint32_t)-1;
+    return (uint32_t)fs_open(name, (int)mode);
+}
+
+/* 系统调用：关闭文件 */
+static uint32_t sys_close_handler(uint32_t fd, uint32_t unused1, uint32_t unused2) {
+    (void)unused1;
+    (void)unused2;
+    return (uint32_t)fs_close((int)fd);
+}
+
+/* 系统调用：读取文件 */
+static uint32_t sys_fread_handler(uint32_t fd, uint32_t buf, uint32_t count) {
+    if (buf == 0 || count == 0) return 0;
+    return (uint32_t)fs_read((int)fd, (void *)buf, count);
+}
+
+/* 系统调用：写入文件 */
+static uint32_t sys_fwrite_handler(uint32_t fd, uint32_t buf, uint32_t count) {
+    if (buf == 0 || count == 0) return 0;
+    return (uint32_t)fs_write((int)fd, (const void *)buf, count);
+}
+
+/* 系统调用：创建文件 */
+static uint32_t sys_fcreate_handler(const char *name, uint32_t unused1, uint32_t unused2) {
+    (void)unused1;
+    (void)unused2;
+    if (name == NULL) return (uint32_t)-1;
+    return (uint32_t)fs_create(name);
+}
+
+/* 系统调用：删除文件 */
+static uint32_t sys_fdelete_handler(const char *name, uint32_t unused1, uint32_t unused2) {
+    (void)unused1;
+    (void)unused2;
+    if (name == NULL) return (uint32_t)-1;
+    return (uint32_t)fs_delete(name);
+}
+
+/* 系统调用：获取文件大小 */
+static uint32_t sys_fsize_handler(uint32_t fd, uint32_t unused1, uint32_t unused2) {
+    (void)unused1;
+    (void)unused2;
+    return (uint32_t)fs_size((int)fd);
+}
+
+/* 系统调用：列出文件 */
+static uint32_t sys_flist_handler(uint32_t unused1, uint32_t unused2, uint32_t unused3) {
+    (void)unused1;
+    (void)unused2;
+    (void)unused3;
+    return (uint32_t)fs_list();
+}
+
+/* ==================== 键盘输入调用 ==================== */
+
+/* 系统调用：获取键盘字符 */
+static uint32_t sys_getchar_handler(uint32_t unused1, uint32_t unused2, uint32_t unused3) {
+    (void)unused1;
+    (void)unused2;
+    (void)unused3;
+    return (uint32_t)(uint8_t)keyboard_getchar();
+}
+
+/* 系统调用：获取一行输入 */
+static uint32_t sys_getline_handler(uint32_t buf, uint32_t max, uint32_t unused) {
+    (void)unused;
+    if (buf == 0 || max == 0) return 0;
+    return (uint32_t)keyboard_getline((char *)buf, (int)max);
+}
+
 /* 系统调用表 */
 typedef uint32_t (*syscall_func_t)(uint32_t, uint32_t, uint32_t);
 
@@ -266,6 +344,18 @@ static syscall_func_t syscall_table[] = {
     [SYS_PUTC]     = (syscall_func_t)sys_putc_handler,
     [SYS_GETTICKS] = (syscall_func_t)sys_getticks_handler,
     [SYS_WAIT]     = (syscall_func_t)sys_wait_handler,
+    /* 文件系统调用 */
+    [SYS_OPEN]     = (syscall_func_t)sys_open_handler,
+    [SYS_CLOSE]    = (syscall_func_t)sys_close_handler,
+    [SYS_FREAD]    = (syscall_func_t)sys_fread_handler,
+    [SYS_FWRITE]   = (syscall_func_t)sys_fwrite_handler,
+    [SYS_FCREATE]  = (syscall_func_t)sys_fcreate_handler,
+    [SYS_FDELETE]  = (syscall_func_t)sys_fdelete_handler,
+    [SYS_FSIZE]    = (syscall_func_t)sys_fsize_handler,
+    [SYS_FLIST]    = (syscall_func_t)sys_flist_handler,
+    /* 键盘输入调用 */
+    [SYS_GETCHAR]  = (syscall_func_t)sys_getchar_handler,
+    [SYS_GETLINE]  = (syscall_func_t)sys_getline_handler,
     /* SYS_FORK 和 SYS_EXEC 在 syscall_handler 中特殊处理 */
 };
 

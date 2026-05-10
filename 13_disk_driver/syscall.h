@@ -19,6 +19,20 @@
 #define SYS_EXEC        9   /* 执行程序 */
 #define SYS_WAIT        10  /* 等待子进程 */
 
+/* 文件系统调用 */
+#define SYS_OPEN        11  /* 打开文件 */
+#define SYS_CLOSE       12  /* 关闭文件 */
+#define SYS_FREAD       13  /* 读取文件 */
+#define SYS_FWRITE      14  /* 写入文件 */
+#define SYS_FCREATE     15  /* 创建文件 */
+#define SYS_FDELETE     16  /* 删除文件 */
+#define SYS_FSIZE       17  /* 获取文件大小 */
+#define SYS_FLIST       18  /* 列出文件 */
+
+/* 键盘输入调用 */
+#define SYS_GETCHAR     19  /* 获取键盘字符 */
+#define SYS_GETLINE     20  /* 获取一行输入 */
+
 /* 系统调用宏（用户程序使用） */
 #define syscall0(num) ({ \
     uint32_t ret; \
@@ -103,6 +117,48 @@ static inline int sys_exec(void (*entry)(void)) {
 
 static inline int sys_wait(int *status) {
     return syscall1(SYS_WAIT, (uint32_t)status);
+}
+
+/* 文件系统调用封装 */
+static inline int sys_open(const char *name, int mode) {
+    return syscall2(SYS_OPEN, (uint32_t)name, mode);
+}
+
+static inline int sys_close(int fd) {
+    return syscall1(SYS_CLOSE, fd);
+}
+
+static inline int sys_fread(int fd, void *buf, uint32_t count) {
+    return syscall3(SYS_FREAD, fd, (uint32_t)buf, count);
+}
+
+static inline int sys_fwrite(int fd, const void *buf, uint32_t count) {
+    return syscall3(SYS_FWRITE, fd, (uint32_t)buf, count);
+}
+
+static inline int sys_fcreate(const char *name) {
+    return syscall1(SYS_FCREATE, (uint32_t)name);
+}
+
+static inline int sys_fdelete(const char *name) {
+    return syscall1(SYS_FDELETE, (uint32_t)name);
+}
+
+static inline int sys_fsize(int fd) {
+    return syscall1(SYS_FSIZE, fd);
+}
+
+static inline int sys_flist(void) {
+    return syscall0(SYS_FLIST);
+}
+
+/* 键盘输入调用封装 */
+static inline char sys_getchar(void) {
+    return (char)syscall0(SYS_GETCHAR);
+}
+
+static inline int sys_getline(char *buf, int max) {
+    return syscall2(SYS_GETLINE, (uint32_t)buf, max);
 }
 
 /* 函数声明 */
