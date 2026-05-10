@@ -220,7 +220,6 @@ static uint32_t sys_wait_handler(uint32_t *status) {
         return (uint32_t)-1;
     }
 
-wait_again:
     /* 检查是否有子进程 */
     if (parent->first_child == NULL) {
         return (uint32_t)-1;
@@ -248,7 +247,7 @@ wait_again:
             }
 
             /* 从进程表中移除 */
-            process_find_by_pid(child->pid);  /* 确保 PID 有效 */
+            process_unregister(child);
             kfree(child);
 
             return child_pid;
@@ -257,12 +256,8 @@ wait_again:
         child = child->next_sibling;
     }
 
-    /* 没有僵尸子进程，阻塞等待 */
-    process_block(parent);
-    schedule();
-
-    /* 被唤醒后再次检查 */
-    goto wait_again;
+    /* 没有僵尸子进程，返回 -2 表示需要阻塞等待 */
+    return (uint32_t)-2;
 }
 
 /* ==================== 文件系统调用 ==================== */
@@ -523,10 +518,38 @@ void syscall_handler(struct interrupt_frame *frame) {
             ret = 0;
         } else if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
             ret = syscall_table[syscall_num](arg1, arg2, arg3);
+
+            /* 特殊处理：wait 返回 -2 表示需要阻塞等待 */
+            if (syscall_num == SYS_WAIT && ret == (uint32_t)-2) {
+                struct process *parent = process_get_current();
+                if (parent != NULL) {
+                    /* 保存当前上下文到父进程 */
+                    parent->context = *frame;
+                    /* 保存 status 参数，以便恢复时使用 */
+                    parent->context.ebx = arg1;  /* status 指针保存在 ebx */
+                    /* 设置 eax = SYS_WAIT，以便恢复时重新调用 */
+                    parent->context.eax = SYS_WAIT;
+                    /* 阻塞父进程 */
+                    process_block(parent);
+                    /* 调度到其他进程（子进程） */
+                    schedule_from_interrupt(frame);
+                    /* 不会返回到这里 */
+                    return;
+                }
+            }
         }
 
         /* 返回值放在 eax */
     frame->eax = ret;
+
+        /* 检查是否需要调度（当前进程被阻塞或时间片用完） */
+        struct process *current = process_get_current();
+        if (current != NULL && current->ticks_remaining == 0) {
+            /* 需要调度，调用 schedule_from_interrupt 切换进程 */
+            /* 注意：frame 会被新进程的上下文覆盖 */
+            schedule_from_interrupt(frame);
+            /* 切换后不会返回这里，iret 会返回到新进程 */
+        }
 }
 
 /* 初始化系统调用 */
