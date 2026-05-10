@@ -469,7 +469,7 @@ void syscall_handler(struct interrupt_frame *frame) {
                         uint8_t *program_base = (uint8_t *)0x100000;
 
                         /* 清零程序区域 */
-                        for (int i = 0; i < file_size + 256; i++) {
+                        for (int i = 0; i < file_size + 4096; i++) {
                             program_base[i] = 0;
                         }
 
@@ -481,61 +481,78 @@ void syscall_handler(struct interrupt_frame *frame) {
                             ret = (uint32_t)-1;
                         } else {
                             /* 检查程序类型 */
-                            /* 如果以 "HELLO" 开头，执行内置的 hello 程序 */
-                            if (file_size >= 5 &&
-                                program_base[0] == 'H' &&
+                            /* SEX1 格式: 魔数 "SEX1" + entry_offset(4) + code_size(4) + code */
+                            if (file_size >= 12 &&
+                                program_base[0] == 'S' &&
                                 program_base[1] == 'E' &&
-                                program_base[2] == 'L' &&
-                                program_base[3] == 'L' &&
-                                program_base[4] == 'O') {
+                                program_base[2] == 'X' &&
+                                program_base[3] == '1') {
 
-                                /* 内置程序：打印 hello 消息 */
-                                struct process *proc = process_get_current();
-                                if (proc != NULL) {
-                                    /* 输出到屏幕固定位置（第 20 行） */
+                                /* 解析头部 */
+                                uint32_t entry_offset = *(uint32_t*)(program_base + 4);
+                                uint32_t code_size = *(uint32_t*)(program_base + 8);
+
+                                /* 验证 */
+                                if (entry_offset + code_size > (uint32_t)file_size - 12) {
+                                    ret = (uint32_t)-1;
+                                } else {
+                                    /* 代码从头部后开始 */
+                                    uint8_t *code_start = program_base + 12;
+
+                                    /* 移动代码到执行位置 */
+                                    for (uint32_t i = 0; i < code_size; i++) {
+                                        program_base[i] = code_start[i];
+                                    }
+
+                                    /* 设置进程上下文执行代码 */
+                                    struct process *proc = process_get_current();
+                                    if (proc != NULL) {
+                                        /* 设置 EIP 指向程序入口 */
+                                        frame->eip = (uint32_t)program_base + entry_offset;
+                                        frame->cs = 0x08;        /* 内核代码段 */
+                                        frame->eflags = 0x202;
+                                        frame->eax = 0;
+                                        frame->ebx = 0;
+                                        frame->ecx = 0;
+                                        frame->edx = 0;
+                                        frame->ebp = 0;
+                                        frame->esi = 0;
+                                        frame->edi = 0;
+
+                                        /* 同步更新 PCB */
+                                        proc->context = *frame;
+                                        proc->ticks_remaining = proc->time_slice;
+
+                                        ret = 0;
+                                    } else {
+                                        ret = (uint32_t)-1;
+                                    }
+                                }
+                            } else {
+                                /* 不是 SEX1 格式，尝试解释执行 */
+                                /* 如果以 "HELLO" 开头，执行内置的 hello 程序 */
+                                if (file_size >= 5 &&
+                                    program_base[0] == 'H' &&
+                                    program_base[1] == 'E' &&
+                                    program_base[2] == 'L' &&
+                                    program_base[3] == 'L' &&
+                                    program_base[4] == 'O') {
+
+                                    /* 输出到屏幕固定位置 */
                                     char *video = (char *)0xB8000;
-                                    int row = 20;
-                                    int offset = row * 160;
-
-                                    /* 清除该行 */
+                                    int offset = 20 * 160;
                                     for (int i = 0; i < 80; i++) {
                                         video[offset + i * 2] = ' ';
                                         video[offset + i * 2 + 1] = 0x0A;
                                     }
-
-                                    /* 显示消息 */
-                                    const char *msg = "EXEC: Hello from loaded program!";
+                                    const char *msg = "EXEC: Hello from program!";
                                     for (int i = 0; msg[i]; i++) {
                                         video[offset + i * 2] = msg[i];
                                         video[offset + i * 2 + 1] = 0x0A;
                                     }
-
                                     ret = 0;
                                 } else {
-                                    ret = (uint32_t)-1;
-                                }
-                            } else {
-                                /* 二进制程序：跳转执行 */
-                                struct process *proc = process_get_current();
-                                if (proc != NULL) {
-                                    /* 设置 EIP 指向程序入口 */
-                                    frame->eip = (uint32_t)program_base;
-                                    frame->cs = 0x08;        /* 内核代码段 */
-                                    frame->eflags = 0x202;
-                                    frame->eax = 0;
-                                    frame->ebx = 0;
-                                    frame->ecx = 0;
-                                    frame->edx = 0;
-                                    frame->ebp = 0;
-                                    frame->esi = 0;
-                                    frame->edi = 0;
-
-                                    /* 同步更新 PCB */
-                                    proc->context = *frame;
-                                    proc->ticks_remaining = proc->time_slice;
-
-                                    ret = 0;
-                                } else {
+                                    /* 未知格式 */
                                     ret = (uint32_t)-1;
                                 }
                             }

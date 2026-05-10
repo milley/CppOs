@@ -1,5 +1,6 @@
 /* shell.c - Shell 实现 */
 
+#include <stdint.h>
 #include "shell.h"
 #include "keyboard.h"
 #include "filesystem.h"
@@ -61,7 +62,8 @@ static void cmd_help(void) {
     print_string("  fork          - Test fork/wait syscalls\n");
     print_string("  pid           - Show current process ID\n");
     print_string("  exec <file>   - Execute program from file\n");
-    print_string("  mkexec <file> - Create test program file\n");
+    print_string("  mkexec <file> - Create test program (HELLO)\n");
+    print_string("  mkbin <file>  - Create binary program (SEX1)\n");
 }
 
 /* 命令: clear */
@@ -319,7 +321,6 @@ static void cmd_mkexec(char *filename) {
         fs_create(filename);
         fd = fs_open(filename, FS_MODE_WRITE);
         if (fd < 0) {
-            /* 输出到固定位置 */
             char *video = (char *)0xB8000;
             int offset = 21 * 160;
             const char *err = "MKEXEC: Failed to create";
@@ -331,26 +332,86 @@ static void cmd_mkexec(char *filename) {
         }
     }
 
-    /* 写入简单的 "程序" 内容 */
+    /* 写入简单的 "程序" 内容 (解释执行) */
     const char *program = "HELLO";
     fs_write(fd, program, 5);
     fs_close(fd);
 
-    /* 输出到固定位置 */
     char *video = (char *)0xB8000;
     int offset = 21 * 160;
     for (int i = 0; i < 80; i++) {
         video[offset + i * 2] = ' ';
         video[offset + i * 2 + 1] = 0x0A;
     }
-    const char *msg = "MKEXEC: Created program: ";
+    const char *msg = "MKEXEC: Created HELLO program";
     for (int i = 0; msg[i]; i++) {
         video[offset + i * 2] = msg[i];
         video[offset + i * 2 + 1] = 0x0A;
     }
-    for (int i = 0; filename[i] && i < 20; i++) {
-        video[offset + (24 + i) * 2] = filename[i];
-        video[offset + (24 + i) * 2 + 1] = 0x0A;
+}
+
+/* 命令: mkbin - 创建一个真正的二进制程序 */
+static void cmd_mkbin(char *filename) {
+    if (filename[0] == '\0') {
+        print_string("Usage: mkbin <filename>\n");
+        return;
+    }
+
+    int fd = fs_open(filename, FS_MODE_WRITE);
+    if (fd < 0) {
+        fs_create(filename);
+        fd = fs_open(filename, FS_MODE_WRITE);
+        if (fd < 0) {
+            char *video = (char *)0xB8000;
+            int offset = 21 * 160;
+            const char *err = "MKBIN: Failed to create";
+            for (int i = 0; err[i]; i++) {
+                video[offset + i * 2] = err[i];
+                video[offset + i * 2 + 1] = 0x0C;
+            }
+            return;
+        }
+    }
+
+    /*
+     * 创建 SEX1 格式的二进制程序
+     *
+     * 程序功能: 直接写入视频内存显示 "BI" 然后无限循环
+     *
+     * 机器码:
+     *   mov byte [0xB8000], 'B'    ; C6 05 00 80 0B 00 42
+     *   mov byte [0xB8002], 'I'    ; C6 05 02 80 0B 00 49
+     *   jmp $                      ; EB FE
+     */
+
+    /* SEX1 头部 */
+    uint8_t header[12];
+    header[0] = 'S'; header[1] = 'E'; header[2] = 'X'; header[3] = '1';  /* 魔数 */
+    header[4] = 0; header[5] = 0; header[6] = 0; header[7] = 0;          /* entry_offset = 0 */
+    header[8] = 18; header[9] = 0; header[10] = 0; header[11] = 0;       /* code_size */
+
+    /* 机器码 - 直接写视频内存 */
+    uint8_t code[18] = {
+        0xC6, 0x05, 0x00, 0x80, 0x0B, 0x00, 0x42,  /* mov byte [0xB8000], 'B' */
+        0xC6, 0x05, 0x02, 0x80, 0x0B, 0x00, 0x49,  /* mov byte [0xB8002], 'I' */
+        0xEB, 0xFE                                  /* jmp $ (无限循环) */
+    };
+
+    /* 写入文件 */
+    fs_write(fd, header, 12);
+    fs_write(fd, code, 18);
+    fs_close(fd);
+
+    char *video = (char *)0xB8000;
+    int offset = 21 * 160;
+    for (int i = 0; i < 80; i++) {
+        video[offset + i * 2] = ' ';
+        video[offset + i * 2 + 1] = 0x0A;
+    }
+    const char *msg = "MKBIN: Created binary (SEX1) 18 bytes";
+    for (int i = 0; msg[i]; i++) {
+        video[offset + i * 2] = msg[i];
+        video[offset + i * 2 + 1] = 0x0A;
     }
 }
 
@@ -392,6 +453,8 @@ static void execute_command(char *cmd) {
         cmd_exec(cmd);
     } else if (strcmp(command, "mkexec") == 0) {
         cmd_mkexec(cmd);
+    } else if (strcmp(command, "mkbin") == 0) {
+        cmd_mkbin(cmd);
     } else {
         print_string("Unknown command: ");
         print_string(command);
