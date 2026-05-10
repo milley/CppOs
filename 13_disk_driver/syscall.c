@@ -13,6 +13,10 @@
 /* 时钟计数（外部定义） */
 extern uint32_t timer_ticks;
 
+/* 外部函数声明 */
+extern void print_string(const char *str);
+extern void print_int(uint32_t value);
+
 /* 系统调用：退出进程 */
 static uint32_t sys_exit_handler(int status) {
     struct process *proc = process_get_current();
@@ -380,42 +384,9 @@ void syscall_handler(struct interrupt_frame *frame) {
             /* fork 需要当前上下文 */
             struct process *parent = process_get_current();
 
-            /* 调试输出 - 第 11 行 */
-            char *debug_video = (char *)0xB8000;
-            int dbg_offset = 11 * 160;
-            debug_video[dbg_offset] = 'F';
-            debug_video[dbg_offset + 1] = 0x0E;
-            debug_video[dbg_offset + 2] = 'O';
-            debug_video[dbg_offset + 3] = 0x0E;
-            debug_video[dbg_offset + 4] = 'R';
-            debug_video[dbg_offset + 5] = 0x0E;
-            debug_video[dbg_offset + 6] = 'K';
-            debug_video[dbg_offset + 7] = 0x0E;
-            debug_video[dbg_offset + 8] = ':';
-            debug_video[dbg_offset + 9] = 0x0E;
-
             if (parent == NULL) {
-                /* parent 是 NULL */
-                debug_video[dbg_offset + 10] = 'N';
-                debug_video[dbg_offset + 11] = 0x0C;
-                debug_video[dbg_offset + 12] = 'U';
-                debug_video[dbg_offset + 13] = 0x0C;
-                debug_video[dbg_offset + 14] = 'L';
-                debug_video[dbg_offset + 15] = 0x0C;
-                debug_video[dbg_offset + 16] = 'L';
-                debug_video[dbg_offset + 17] = 0x0C;
                 ret = (uint32_t)-1;
             } else {
-                /* parent 存在，显示 PID */
-                debug_video[dbg_offset + 10] = 'P';
-                debug_video[dbg_offset + 11] = 0x0A;
-                debug_video[dbg_offset + 12] = 'I';
-                debug_video[dbg_offset + 13] = 0x0A;
-                debug_video[dbg_offset + 14] = 'D';
-                debug_video[dbg_offset + 15] = 0x0A;
-                debug_video[dbg_offset + 16] = '0' + parent->pid;
-                debug_video[dbg_offset + 17] = 0x0A;
-
                 /* 分配 PID */
                 uint32_t pid = 0;
                 for (uint32_t i = 1; i < MAX_PROCESSES; i++) {
@@ -425,20 +396,12 @@ void syscall_handler(struct interrupt_frame *frame) {
                     }
                 }
 
-                /* 显示找到的 PID */
-                debug_video[dbg_offset + 18] = 'N';
-                debug_video[dbg_offset + 19] = 0x0B;
-                debug_video[dbg_offset + 20] = '0' + pid;
-                debug_video[dbg_offset + 21] = 0x0B;
-
                 if (pid == 0) {
                     ret = (uint32_t)-1;
                 } else {
                     /* 分配 PCB */
                     struct process *child = (struct process *)kmalloc(sizeof(struct process));
                     if (child == NULL) {
-                        debug_video[dbg_offset + 22] = 'M';
-                        debug_video[dbg_offset + 23] = 0x0C;
                         ret = (uint32_t)-1;
                     } else {
                         /* 复制父进程的上下文（从中断帧） */
@@ -466,9 +429,6 @@ void syscall_handler(struct interrupt_frame *frame) {
                         /* 地址空间 - 简化版：共享父进程地址空间 */
                         child->address_space = parent->address_space;
 
-                        /* 对于内核态进程，直接使用父进程的栈信息 */
-                        /* 子进程会在调度时从 frame 恢复上下文，返回到 sys_fork 调用点 */
-
                         /* 设置进程树关系 */
                         child->parent = parent;
                         child->first_child = NULL;
@@ -482,40 +442,107 @@ void syscall_handler(struct interrupt_frame *frame) {
                         /* 加入就绪队列 */
                         process_unblock(child);
 
-                        /* 成功! */
-                        debug_video[dbg_offset + 22] = 'O';
-                        debug_video[dbg_offset + 23] = 0x0A;
-                        debug_video[dbg_offset + 24] = 'K';
-                        debug_video[dbg_offset + 25] = 0x0A;
-
                         /* 父进程返回子进程 PID */
                         ret = pid;
                     }
                 }
             }
         } else if (syscall_num == SYS_EXEC) {
-            /* exec 需要修改 frame */
-            struct process *proc = process_get_current();
-            if (proc != NULL) {
-                /* 重置上下文 - 直接修改 frame */
-                frame->eip = arg1;
-                frame->cs = 0x1B;
-                frame->eflags = 0x202;
-                frame->useresp = proc->user_stack;
-                frame->ss = 0x23;
-                frame->eax = 0;
-                frame->ebx = 0;
-                frame->ecx = 0;
-                frame->edx = 0;
-                frame->ebp = 0;
-                frame->esi = 0;
-                frame->edi = 0;
+            /* exec - 从文件系统加载并执行程序 */
+            const char *filename = (const char *)arg1;
 
-                /* 同步更新 PCB */
-                proc->context = *frame;
-                proc->ticks_remaining = proc->time_slice;
+            if (filename == NULL) {
+                ret = (uint32_t)-1;
+            } else {
+                /* 打开文件 */
+                int fd = fs_open(filename, FS_MODE_READ);
+                if (fd < 0) {
+                    ret = (uint32_t)-1;  /* 文件不存在 */
+                } else {
+                    /* 获取文件大小 */
+                    int32_t file_size = fs_size(fd);
+                    if (file_size <= 0 || file_size > FS_MAX_FILESIZE) {
+                        fs_close(fd);
+                        ret = (uint32_t)-1;
+                    } else {
+                        /* 分配内存加载程序（使用固定地址 0x100000） */
+                        uint8_t *program_base = (uint8_t *)0x100000;
+
+                        /* 清零程序区域 */
+                        for (int i = 0; i < file_size + 256; i++) {
+                            program_base[i] = 0;
+                        }
+
+                        /* 读取文件内容 */
+                        int bytes_read = fs_read(fd, program_base, file_size);
+                        fs_close(fd);
+
+                        if (bytes_read != file_size) {
+                            ret = (uint32_t)-1;
+                        } else {
+                            /* 检查程序类型 */
+                            /* 如果以 "HELLO" 开头，执行内置的 hello 程序 */
+                            if (file_size >= 5 &&
+                                program_base[0] == 'H' &&
+                                program_base[1] == 'E' &&
+                                program_base[2] == 'L' &&
+                                program_base[3] == 'L' &&
+                                program_base[4] == 'O') {
+
+                                /* 内置程序：打印 hello 消息 */
+                                struct process *proc = process_get_current();
+                                if (proc != NULL) {
+                                    /* 输出到屏幕固定位置（第 20 行） */
+                                    char *video = (char *)0xB8000;
+                                    int row = 20;
+                                    int offset = row * 160;
+
+                                    /* 清除该行 */
+                                    for (int i = 0; i < 80; i++) {
+                                        video[offset + i * 2] = ' ';
+                                        video[offset + i * 2 + 1] = 0x0A;
+                                    }
+
+                                    /* 显示消息 */
+                                    const char *msg = "EXEC: Hello from loaded program!";
+                                    for (int i = 0; msg[i]; i++) {
+                                        video[offset + i * 2] = msg[i];
+                                        video[offset + i * 2 + 1] = 0x0A;
+                                    }
+
+                                    ret = 0;
+                                } else {
+                                    ret = (uint32_t)-1;
+                                }
+                            } else {
+                                /* 二进制程序：跳转执行 */
+                                struct process *proc = process_get_current();
+                                if (proc != NULL) {
+                                    /* 设置 EIP 指向程序入口 */
+                                    frame->eip = (uint32_t)program_base;
+                                    frame->cs = 0x08;        /* 内核代码段 */
+                                    frame->eflags = 0x202;
+                                    frame->eax = 0;
+                                    frame->ebx = 0;
+                                    frame->ecx = 0;
+                                    frame->edx = 0;
+                                    frame->ebp = 0;
+                                    frame->esi = 0;
+                                    frame->edi = 0;
+
+                                    /* 同步更新 PCB */
+                                    proc->context = *frame;
+                                    proc->ticks_remaining = proc->time_slice;
+
+                                    ret = 0;
+                                } else {
+                                    ret = (uint32_t)-1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            ret = 0;
         } else if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
             ret = syscall_table[syscall_num](arg1, arg2, arg3);
 

@@ -111,8 +111,8 @@ static inline int sys_fork(void) {
     return syscall0(SYS_FORK);
 }
 
-static inline int sys_exec(void (*entry)(void)) {
-    return syscall1(SYS_EXEC, (uint32_t)entry);
+static inline int sys_exec(const char *filename) {
+    return syscall1(SYS_EXEC, (uint32_t)filename);
 }
 
 static inline int sys_wait(int *status) {

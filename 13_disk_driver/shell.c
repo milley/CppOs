@@ -60,6 +60,8 @@ static void cmd_help(void) {
     print_string("  ver           - Show OS version\n");
     print_string("  fork          - Test fork/wait syscalls\n");
     print_string("  pid           - Show current process ID\n");
+    print_string("  exec <file>   - Execute program from file\n");
+    print_string("  mkexec <file> - Create test program file\n");
 }
 
 /* 命令: clear */
@@ -208,39 +210,8 @@ static void cmd_pid(void) {
     print_string("\n");
 }
 
-/* 调试输出到屏幕顶部（第 0 行） */
-static void debug_print(const char *msg, uint32_t val) {
-    char *video = (char *)0xB8000;
-    static int debug_col = 0;
-    int offset = debug_col * 2;
-    debug_col = (debug_col + 15) % 80;
-
-    /* 清除该位置 */
-    for (int i = 0; i < 15; i++) {
-        video[offset + i * 2] = ' ';
-        video[offset + i * 2 + 1] = 0x0C;
-    }
-
-    for (int i = 0; msg[i]; i++) {
-        video[offset + i * 2] = msg[i];
-        video[offset + i * 2 + 1] = 0x0C;  /* 红色 */
-    }
-    if (val != 0xFFFFFFFF) {
-        int pos = strlen(msg);
-        /* 显示数字 */
-        if (val >= 10) {
-            video[offset + pos * 2] = '0' + (val / 10);
-            video[offset + pos * 2 + 1] = 0x0C;
-            pos++;
-        }
-        video[offset + pos * 2] = '0' + (val % 10);
-        video[offset + pos * 2 + 1] = 0x0C;
-    }
-}
-
 /* 子进程测试函数 */
 static void child_process_func(void) {
-    debug_print("CHILD START", 0);
     uint32_t my_pid = sys_getpid();
     print_string("  [Child] PID = ");
     print_int(my_pid);
@@ -253,14 +224,12 @@ static void child_process_func(void) {
         for (volatile int j = 0; j < 500000; j++);
     }
 
-    debug_print("CHILD EXIT", 42);
     print_string("  [Child] exiting with status 42\n");
     sys_exit(42);
 }
 
 /* 命令: fork - 测试进程创建 */
 static void cmd_fork(void) {
-    debug_print("FORK START", 0);
     print_string("Testing process creation...\n");
 
     /* 使用 process_create_kernel 创建内核态子进程 */
@@ -268,12 +237,9 @@ static void cmd_fork(void) {
     struct process *child = process_create_kernel(child_process_func, PRIORITY_NORMAL);
 
     if (child == NULL) {
-        debug_print("CREATE FAIL", 0);
         print_string("  Failed to create child process!\n");
         return;
     }
-
-    debug_print("CREATE OK", child->pid);
 
     /* 设置父进程关系 */
     struct process *parent = process_get_current();
@@ -287,19 +253,105 @@ static void cmd_fork(void) {
     print_int(child->pid);
     print_string("\n");
 
-    debug_print("WAIT CALL", 0);
-
     /* 等待子进程 */
     int status = 0;
     int waited = sys_wait(&status);
-
-    debug_print("WAIT RET", waited);
 
     print_string("  [Parent] child ");
     print_int(waited);
     print_string(" exited with status ");
     print_int(status);
     print_string("\n");
+}
+
+/* 命令: exec - 执行程序文件 */
+static void cmd_exec(char *filename) {
+    if (filename[0] == '\0') {
+        print_string("Usage: exec <filename>\n");
+        return;
+    }
+
+    /* 输出到屏幕固定位置（第 21 行） */
+    char *video = (char *)0xB8000;
+    int offset = 21 * 160;
+    for (int i = 0; i < 80; i++) {
+        video[offset + i * 2] = ' ';
+        video[offset + i * 2 + 1] = 0x0B;
+    }
+    const char *msg = "EXEC: Calling sys_exec...";
+    for (int i = 0; msg[i]; i++) {
+        video[offset + i * 2] = msg[i];
+        video[offset + i * 2 + 1] = 0x0B;
+    }
+
+    int result = sys_exec(filename);
+
+    /* 显示结果（第 22 行） */
+    offset = 22 * 160;
+    for (int i = 0; i < 80; i++) {
+        video[offset + i * 2] = ' ';
+        video[offset + i * 2 + 1] = 0x0C;
+    }
+    if (result < 0) {
+        const char *err = "EXEC: Failed!";
+        for (int i = 0; err[i]; i++) {
+            video[offset + i * 2] = err[i];
+            video[offset + i * 2 + 1] = 0x0C;
+        }
+    } else {
+        const char *ok = "EXEC: Success!";
+        for (int i = 0; ok[i]; i++) {
+            video[offset + i * 2] = ok[i];
+            video[offset + i * 2 + 1] = 0x0A;
+        }
+    }
+}
+
+/* 命令: mkexec - 创建一个简单的测试程序 */
+static void cmd_mkexec(char *filename) {
+    if (filename[0] == '\0') {
+        print_string("Usage: mkexec <filename>\n");
+        return;
+    }
+
+    int fd = fs_open(filename, FS_MODE_WRITE);
+    if (fd < 0) {
+        fs_create(filename);
+        fd = fs_open(filename, FS_MODE_WRITE);
+        if (fd < 0) {
+            /* 输出到固定位置 */
+            char *video = (char *)0xB8000;
+            int offset = 21 * 160;
+            const char *err = "MKEXEC: Failed to create";
+            for (int i = 0; err[i]; i++) {
+                video[offset + i * 2] = err[i];
+                video[offset + i * 2 + 1] = 0x0C;
+            }
+            return;
+        }
+    }
+
+    /* 写入简单的 "程序" 内容 */
+    const char *program = "HELLO";
+    fs_write(fd, program, 5);
+    fs_close(fd);
+
+    /* 输出到固定位置 */
+    char *video = (char *)0xB8000;
+    int offset = 21 * 160;
+    for (int i = 0; i < 80; i++) {
+        video[offset + i * 2] = ' ';
+        video[offset + i * 2 + 1] = 0x0A;
+    }
+    const char *msg = "MKEXEC: Created program: ";
+    for (int i = 0; msg[i]; i++) {
+        video[offset + i * 2] = msg[i];
+        video[offset + i * 2 + 1] = 0x0A;
+    }
+    for (int i = 0; filename[i] && i < 20; i++) {
+        video[offset + (24 + i) * 2] = filename[i];
+        video[offset + (24 + i) * 2 + 1] = 0x0A;
+    }
 }
 
 /* 执行命令 */
@@ -336,6 +388,10 @@ static void execute_command(char *cmd) {
         cmd_fork();
     } else if (strcmp(command, "pid") == 0) {
         cmd_pid();
+    } else if (strcmp(command, "exec") == 0) {
+        cmd_exec(cmd);
+    } else if (strcmp(command, "mkexec") == 0) {
+        cmd_mkexec(cmd);
     } else {
         print_string("Unknown command: ");
         print_string(command);
@@ -386,19 +442,6 @@ void shell_init(void) {
 void shell_run(void) {
     print_string("\n=== MyOS Shell ===\n");
     print_string("Type 'help' for commands.\n\n");
-
-    /* 调试：显示 shell 已启动 - 屏幕最顶部 */
-    char *video = (char *)0xB8000;
-    video[0] = 'S';
-    video[1] = 0x0A;  /* 绿色 */
-    video[2] = 'H';
-    video[3] = 0x0A;
-    video[4] = 'E';
-    video[5] = 0x0A;
-    video[6] = 'L';
-    video[7] = 0x0A;
-    video[8] = 'L';
-    video[9] = 0x0A;
 
     while (1) {
         show_prompt();
