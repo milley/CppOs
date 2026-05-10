@@ -90,6 +90,9 @@ os.bin: bootloader.bin kernel.bin
 	truncate -s 29184 os.bin
 
 run: os.bin disk.img
+	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a -nographic -serial mon:stdio
+
+run-graphic: os.bin disk.img
 	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a
 
 disk.img:
