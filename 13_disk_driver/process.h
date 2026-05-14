@@ -55,6 +55,11 @@ struct process {
     /* 打开的文件描述符 */
     int open_files[MAX_OPEN_FILES];
 
+    /* IPC 相关 */
+    struct message *msg_queue;        /* 消息队列头 */
+    struct message *msg_queue_tail;   /* 消息队列尾 */
+    uint32_t waiting_for_sender;      /* 等待来自特定 PID 的消息 (0=任意) */
+
     /* 进程树 */
     struct process *parent;
     struct process *first_child;

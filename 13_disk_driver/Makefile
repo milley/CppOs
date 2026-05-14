@@ -78,19 +78,22 @@ keyboard.o: keyboard.c keyboard.h
 shell.o: shell.c shell.h
 	$(CC) $(CFLAGS) shell.c -o shell.o
 
+ipc.o: ipc.c ipc.h
+	$(CC) $(CFLAGS) ipc.c -o ipc.o
+
 kernel.bin: kernel_entry.o kernel.o idt.o idt_asm.o pic.o syscall.o \
             usermode.o usermode_asm.o tss.o allocator.o paging.o \
             process.o context_switch.o disk.o string.o filesystem.o \
-            keyboard.o shell.o
-	$(LD) -m elf_i386 -Ttext 0x7E00 -o kernel_elf.elf $^
+            keyboard.o shell.o ipc.o
+	$(LD) -m elf_i386 -T linker.ld -o kernel_elf.elf $^
 	$(OBJCOPY) -O binary kernel_elf.elf kernel.bin
 
 os.bin: bootloader.bin kernel.bin
 	cat bootloader.bin kernel.bin > os.bin
-	truncate -s 29184 os.bin
+	truncate -s 1474560 os.bin
 
 run: os.bin disk.img
-	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a -nographic -serial mon:stdio
+	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a -nographic
 
 run-graphic: os.bin disk.img
 	qemu-system-x86_64 -drive format=raw,file=os.bin,if=floppy -drive format=raw,file=disk.img,if=ide -boot a

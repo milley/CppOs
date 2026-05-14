@@ -4,7 +4,7 @@
 [ORG 0x7C00]
 
 KERNEL_START   equ 0x7E00
-KERNEL_SECTORS equ 56
+KERNEL_SECTORS equ 66
 
 start:
     cli
@@ -17,13 +17,48 @@ start:
     mov si, msg_load
     call print16
 
+    ; 多磁道读取
+    ; 第1次: 扇区 2-18 (17扇区), 磁头0, 柱面0
     mov ah, 0x02
-    mov al, KERNEL_SECTORS
+    mov al, 17
     mov ch, 0
     mov cl, 2
     mov dh, 0
     mov dl, 0x00
     mov bx, KERNEL_START
+    int 0x13
+    jc disk_error
+
+    ; 第2次: 扇区 1-18 (18扇区), 磁头1, 柱面0
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 0
+    mov cl, 1
+    mov dh, 1
+    mov dl, 0x00
+    mov bx, KERNEL_START + 17*512
+    int 0x13
+    jc disk_error
+
+    ; 第3次: 扇区 1-18 (18扇区), 磁头0, 柱面1
+    mov ah, 0x02
+    mov al, 18
+    mov ch, 1
+    mov cl, 1
+    mov dh, 0
+    mov dl, 0x00
+    mov bx, KERNEL_START + 35*512
+    int 0x13
+    jc disk_error
+
+    ; 第4次: 扇区 1-12 (12扇区), 磁头1, 柱面1
+    mov ah, 0x02
+    mov al, 12
+    mov ch, 1
+    mov cl, 1
+    mov dh, 1
+    mov dl, 0x00
+    mov bx, KERNEL_START + 53*512
     int 0x13
     jc disk_error
 
@@ -40,7 +75,8 @@ start:
     or eax, 1
     mov cr0, eax
 
-    jmp 0x08:pm_entry
+    ; 跳转到 32 位代码设置段寄存器 (pm_entry 在 0x7CE8)
+    jmp 0x08:0x7CE8
 
 print16:
     lodsb
@@ -77,22 +113,14 @@ gdt_ptr:
     dw gdt.end - gdt - 1
     dd gdt
 
-; ============== 32位保护模式 ==============
 [BITS 32]
 pm_entry:
-    ; 设置数据段
     mov ax, 0x10
     mov ds, ax
     mov es, ax
     mov ss, ax
     mov esp, 0x90000
-
-    ; 跳转到内核
-    jmp KERNEL_START
-
-.halt:
-    hlt
-    jmp .halt
+    jmp 0x08:0x7E00
 
 times 510 - ($ - $$) db 0
 dw 0xAA55

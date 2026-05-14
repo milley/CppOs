@@ -33,6 +33,13 @@
 #define SYS_GETCHAR     19  /* 获取键盘字符 */
 #define SYS_GETLINE     20  /* 获取一行输入 */
 
+/* IPC 系统调用 */
+#define SYS_IPC_SEND    21  /* 发送消息 */
+#define SYS_IPC_RECV    22  /* 接收消息 (阻塞) */
+#define SYS_IPC_RECV_NB 23  /* 非阻塞接收 */
+#define SYS_IPC_CALL    24  /* 同步调用 (send + recv) */
+#define SYS_IPC_REPLY   25  /* 回复消息 */
+
 /* 系统调用宏（用户程序使用） */
 #define syscall0(num) ({ \
     uint32_t ret; \
@@ -70,6 +77,26 @@
         "int $0x80" \
         : "=a"(ret) \
         : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3) \
+    ); \
+    ret; \
+})
+
+#define syscall4(num, arg1, arg2, arg3, arg4) ({ \
+    uint32_t ret; \
+    __asm__ volatile( \
+        "int $0x80" \
+        : "=a"(ret) \
+        : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3), "S"(arg4) \
+    ); \
+    ret; \
+})
+
+#define syscall5(num, arg1, arg2, arg3, arg4, arg5) ({ \
+    uint32_t ret; \
+    __asm__ volatile( \
+        "int $0x80" \
+        : "=a"(ret) \
+        : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3), "S"(arg4), "D"(arg5) \
     ); \
     ret; \
 })
@@ -159,6 +186,27 @@ static inline char sys_getchar(void) {
 
 static inline int sys_getline(char *buf, int max) {
     return syscall2(SYS_GETLINE, (uint32_t)buf, max);
+}
+
+/* IPC 系统调用封装 */
+static inline int sys_ipc_send(uint32_t target_pid, uint32_t type, uint32_t data1, uint32_t data2) {
+    return syscall4(SYS_IPC_SEND, target_pid, type, data1, data2);
+}
+
+static inline int sys_ipc_recv(uint32_t from_pid, void *msg) {
+    return syscall2(SYS_IPC_RECV, from_pid, (uint32_t)msg);
+}
+
+static inline int sys_ipc_recv_nb(uint32_t from_pid, void *msg) {
+    return syscall2(SYS_IPC_RECV_NB, from_pid, (uint32_t)msg);
+}
+
+static inline int sys_ipc_call(uint32_t target_pid, uint32_t type, uint32_t data1, uint32_t data2, void *reply) {
+    return syscall5(SYS_IPC_CALL, target_pid, type, data1, data2, (uint32_t)reply);
+}
+
+static inline int sys_ipc_reply(uint32_t target_pid, uint32_t type, uint32_t data1, uint32_t data2) {
+    return syscall4(SYS_IPC_REPLY, target_pid, type, data1, data2);
 }
 
 /* 函数声明 */

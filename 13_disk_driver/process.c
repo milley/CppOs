@@ -63,6 +63,11 @@ struct process* process_create(void (*entry)(void), uint32_t priority) {
     proc->time_slice = DEFAULT_TIME_SLICE;
     proc->ticks_remaining = proc->time_slice;
 
+    /* 初始化 IPC 字段 */
+    proc->msg_queue = NULL;
+    proc->msg_queue_tail = NULL;
+    proc->waiting_for_sender = 0;
+
     proc->context.eip = (uint32_t)entry;
     proc->context.cs = 0x1B;
     proc->context.eflags = 0x202;
@@ -127,6 +132,11 @@ struct process* process_create_kernel(void (*entry)(void), uint32_t priority) {
     proc->next = NULL;
     proc->time_slice = DEFAULT_TIME_SLICE;
     proc->ticks_remaining = proc->time_slice;
+
+    /* 初始化 IPC 字段 */
+    proc->msg_queue = NULL;
+    proc->msg_queue_tail = NULL;
+    proc->waiting_for_sender = 0;
 
     /* 内核态进程上下文 */
     proc->context.eip = (uint32_t)entry;

@@ -200,6 +200,10 @@ void kernel_main(void) {
         init_proc->first_child = NULL;
         init_proc->next_sibling = NULL;
         init_proc->next = NULL;
+        /* 初始化 IPC 字段 */
+        init_proc->msg_queue = NULL;
+        init_proc->msg_queue_tail = NULL;
+        init_proc->waiting_for_sender = 0;
         for (int i = 0; i < MAX_OPEN_FILES; i++) {
             init_proc->open_files[i] = -1;
         }

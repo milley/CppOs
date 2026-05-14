@@ -9,6 +9,7 @@
 #include "filesystem.h"
 #include "keyboard.h"
 #include "string.h"
+#include "ipc.h"
 
 /* 时钟计数（外部定义） */
 extern uint32_t timer_ticks;
@@ -340,6 +341,10 @@ static uint32_t sys_getline_handler(uint32_t buf, uint32_t max, uint32_t unused)
     return (uint32_t)keyboard_getline((char *)buf, (int)max);
 }
 
+/* ==================== IPC 系统调用 ==================== */
+
+/* IPC 处理函数需要从 frame 获取额外参数 (esi, edi) */
+
 /* 系统调用表 */
 typedef uint32_t (*syscall_func_t)(uint32_t, uint32_t, uint32_t);
 
@@ -435,6 +440,11 @@ void syscall_handler(struct interrupt_frame *frame) {
                         child->next_sibling = parent->first_child;
                         parent->first_child = child;
                         child->next = NULL;
+
+                        /* 初始化 IPC 字段 */
+                        child->msg_queue = NULL;
+                        child->msg_queue_tail = NULL;
+                        child->waiting_for_sender = 0;
 
                         /* 注册到进程表 */
                         process_register(child);
@@ -560,6 +570,21 @@ void syscall_handler(struct interrupt_frame *frame) {
                     }
                 }
             }
+        } else if (syscall_num == SYS_IPC_SEND) {
+            /* IPC 发送消息: arg1=target_pid, arg2=type, arg3=data1, esi=data2 */
+            ret = (uint32_t)ipc_send(arg1, arg2, arg3, frame->esi);
+        } else if (syscall_num == SYS_IPC_RECV) {
+            /* IPC 接收消息 (阻塞): arg1=from_pid, arg2=msg buffer */
+            ret = (uint32_t)ipc_recv(arg1, (message_t *)arg2);
+        } else if (syscall_num == SYS_IPC_RECV_NB) {
+            /* IPC 非阻塞接收: arg1=from_pid, arg2=msg buffer */
+            ret = (uint32_t)ipc_recv_nonblock(arg1, (message_t *)arg2);
+        } else if (syscall_num == SYS_IPC_CALL) {
+            /* IPC 同步调用: arg1=target_pid, arg2=type, arg3=data1, esi=data2, edi=reply buffer */
+            ret = (uint32_t)ipc_call(arg1, arg2, arg3, frame->esi, (message_t *)frame->edi);
+        } else if (syscall_num == SYS_IPC_REPLY) {
+            /* IPC 回复消息: arg1=target_pid, arg2=type, arg3=data1, esi=data2 */
+            ret = (uint32_t)ipc_reply(arg1, arg2, arg3, frame->esi);
         } else if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
             ret = syscall_table[syscall_num](arg1, arg2, arg3);
 

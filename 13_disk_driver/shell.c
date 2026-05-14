@@ -7,6 +7,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "process.h"
+#include "ipc.h"
 
 #define VIDEO_MEMORY 0xB8000
 #define MAX_COLS 80
@@ -64,6 +65,9 @@ static void cmd_help(void) {
     print_string("  exec <file>   - Execute program from file\n");
     print_string("  mkexec <file> - Create test program (HELLO)\n");
     print_string("  mkbin <file>  - Create binary program (SEX1)\n");
+    print_string("  ipc_send <pid> <data> - Send IPC message\n");
+    print_string("  ipc_recv      - Receive IPC message (blocking)\n");
+    print_string("  ipc_test      - Test IPC between processes\n");
 }
 
 /* 命令: clear */
@@ -415,6 +419,178 @@ static void cmd_mkbin(char *filename) {
     }
 }
 
+/* 命令: ipc_send - 发送 IPC 消息 */
+static void cmd_ipc_send(char *args) {
+    char pid_str[16];
+    char data_str[16];
+
+    args = get_arg(args, pid_str, sizeof(pid_str));
+    args = skip_spaces(args);
+    args = get_arg(args, data_str, sizeof(data_str));
+
+    if (pid_str[0] == '\0') {
+        print_string("Usage: ipc_send <pid> <data>\n");
+        return;
+    }
+
+    uint32_t target_pid = 0;
+    for (int i = 0; pid_str[i]; i++) {
+        target_pid = target_pid * 10 + (pid_str[i] - '0');
+    }
+
+    uint32_t data = 0;
+    if (data_str[0] != '\0') {
+        for (int i = 0; data_str[i]; i++) {
+            data = data * 10 + (data_str[i] - '0');
+        }
+    }
+
+    print_string("Sending message to PID ");
+    print_int(target_pid);
+    print_string(" with data ");
+    print_int(data);
+    print_string("\n");
+
+    int result = ipc_send(target_pid, MSG_TYPE_DATA, data, 0);
+
+    if (result == IPC_SUCCESS) {
+        print_string("Message sent successfully!\n");
+    } else if (result == IPC_NO_RECEIVER) {
+        print_string("Error: Target process not found\n");
+    } else {
+        print_string("Error: Failed to send message\n");
+    }
+}
+
+/* 命令: ipc_recv - 接收 IPC 消息 (阻塞) */
+static void cmd_ipc_recv(void) {
+    print_string("Waiting for message (blocking)...\n");
+
+    message_t msg;
+    int result = ipc_recv(0, &msg);  /* 0 = 接收任意发送者的消息 */
+
+    if (result == IPC_SUCCESS) {
+        print_string("Received message:\n");
+        print_string("  From PID: ");
+        print_int(msg.sender_pid);
+        print_string("\n");
+        print_string("  Type: ");
+        print_int(msg.type);
+        print_string("\n");
+        print_string("  Data1: ");
+        print_int(msg.data1);
+        print_string("\n");
+        print_string("  Data2: ");
+        print_int(msg.data2);
+        print_string("\n");
+    } else {
+        print_string("Error: Failed to receive message\n");
+    }
+}
+
+/* IPC 测试子进程 */
+static void ipc_test_child(void) {
+    uint32_t my_pid = sys_getpid();
+    print_string("  [IPC Child] PID = ");
+    print_int(my_pid);
+    print_string("\n");
+
+    /* 等待接收消息 */
+    print_string("  [IPC Child] Waiting for message...\n");
+
+    message_t msg;
+    int result = ipc_recv(0, &msg);
+
+    if (result == IPC_SUCCESS) {
+        print_string("  [IPC Child] Received from PID ");
+        print_int(msg.sender_pid);
+        print_string(": data=");
+        print_int(msg.data1);
+        print_string("\n");
+
+        /* 回复消息 */
+        print_string("  [IPC Child] Sending reply...\n");
+        ipc_send(msg.sender_pid, MSG_TYPE_REPLY, msg.data1 * 2, 0);
+    }
+
+    print_string("  [IPC Child] Exiting\n");
+    sys_exit(0);
+}
+
+/* 命令: ipc_test - 测试 IPC 进程间通信 */
+static void cmd_ipc_test(void) {
+    print_string("Testing IPC between processes...\n");
+
+    uint32_t parent_pid = sys_getpid();
+    print_string("  [Parent] PID = ");
+    print_int(parent_pid);
+    print_string("\n");
+
+    /* 创建子进程 */
+    extern struct process* process_create_kernel(void (*entry)(void), uint32_t priority);
+    struct process *child = process_create_kernel(ipc_test_child, PRIORITY_NORMAL);
+
+    if (child == NULL) {
+        print_string("  Failed to create child process!\n");
+        return;
+    }
+
+    /* 设置父进程关系 */
+    struct process *parent = process_get_current();
+    if (parent != NULL) {
+        child->parent = parent;
+        child->next_sibling = parent->first_child;
+        parent->first_child = child;
+    }
+
+    /* 初始化子进程的 IPC 字段 */
+    child->msg_queue = NULL;
+    child->msg_queue_tail = NULL;
+    child->waiting_for_sender = 0;
+
+    print_string("  [Parent] Created child PID = ");
+    print_int(child->pid);
+    print_string("\n");
+
+    /* 等待一下让子进程启动 */
+    for (volatile int j = 0; j < 1000000; j++);
+
+    /* 发送消息给子进程 */
+    print_string("  [Parent] Sending message to child...\n");
+    int result = ipc_send(child->pid, MSG_TYPE_DATA, 42, 0);
+
+    if (result == IPC_SUCCESS) {
+        print_string("  [Parent] Message sent (data=42)\n");
+    } else {
+        print_string("  [Parent] Failed to send message\n");
+    }
+
+    /* 等待子进程退出 */
+    int status = 0;
+    int waited = sys_wait(&status);
+
+    print_string("  [Parent] Child ");
+    print_int(waited);
+    print_string(" exited with status ");
+    print_int(status);
+    print_string("\n");
+
+    /* 尝试接收回复 */
+    print_string("  [Parent] Checking for reply...\n");
+    message_t reply;
+    result = ipc_recv_nonblock(child->pid, &reply);
+
+    if (result == IPC_SUCCESS) {
+        print_string("  [Parent] Received reply: data=");
+        print_int(reply.data1);
+        print_string("\n");
+    } else {
+        print_string("  [Parent] No reply received (child already exited)\n");
+    }
+
+    print_string("IPC test completed!\n");
+}
+
 /* 执行命令 */
 static void execute_command(char *cmd) {
     char command[32];
@@ -455,6 +631,12 @@ static void execute_command(char *cmd) {
         cmd_mkexec(cmd);
     } else if (strcmp(command, "mkbin") == 0) {
         cmd_mkbin(cmd);
+    } else if (strcmp(command, "ipc_send") == 0) {
+        cmd_ipc_send(cmd);
+    } else if (strcmp(command, "ipc_recv") == 0) {
+        cmd_ipc_recv();
+    } else if (strcmp(command, "ipc_test") == 0) {
+        cmd_ipc_test();
     } else {
         print_string("Unknown command: ");
         print_string(command);
